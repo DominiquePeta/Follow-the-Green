@@ -1,0 +1,1460 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2868
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\froman\fcharset0 Times-Roman;}
+{\colortbl;\red255\green255\blue255;\red0\green0\blue0;}
+{\*\expandedcolortbl;;\cssrgb\c0\c0\c0;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\deftab720
+\pard\pardeftab720\sa240\partightenfactor0
+
+\f0\fs24 \cf0 \expnd0\expndtw0\kerning0
+\outl0\strokewidth0 \strokec2 """\
+FTSE Follow the Green Scanner\
+==============================\
+A Streamlit web app for UK long-term investors using Felix's\
+"Follow the Money" / "Follow the Green" methodology.\
+\
+Run with:\
+    streamlit run app.py\
+\
+Install dependencies:\
+    pip install streamlit yfinance pandas plotly\
+\
+Felix's Core Philosophy:\
+    "Big institutional money (funds, pension schemes, market makers) can't\
+     hide their activity \'97 they move too many shares. Their buying and selling\
+     leaves unmistakable footprints in the volume data. Our job is simply to\
+     read those footprints and follow the smart money."\
+\
+Key Rules Explained in Code Below:\
+    1. SMA50  \uc0\u8594  Defines whether we're in an uptrend or downtrend\
+    2. Volume Spike (>1.5\'d7) \uc0\u8594  Detects institutional activity\
+    3. Rising Volume Trend \uc0\u8594  Confirms sustained accumulation, not a one-off\
+    4. Price > SMA50 + Volume Spike + Rising Vol = BULLISH ACCUMULATION\
+    5. Price < SMA50 + Volume Spike = BEARISH DISTRIBUTION (danger zone)\
+"""\
+\
+# \uc0\u9472 \u9472  Imports \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+import streamlit as st\
+import yfinance as yf\
+import pandas as pd\
+import plotly.graph_objects as go\
+from plotly.subplots import make_subplots\
+import datetime\
+import io\
+\
+# \uc0\u9472 \u9472  Page Config (must be the very first Streamlit call) \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+st.set_page_config(\
+    page_title="FTSE Follow the Green Scanner",\
+    page_icon="\uc0\u55357 \u56520 ",\
+    layout="wide",\
+    initial_sidebar_state="expanded",\
+)\
+\
+# \uc0\u9472 \u9472  Custom CSS \'96 Dark Theme \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+st.markdown(\
+    """\
+<style>\
+    /* Global */\
+    html, body, [class*="css"] \{\
+        font-family: 'Inter', 'Segoe UI', -apple-system, sans-serif;\
+    \}\
+    .main \{ background-color: #0e1117; \}\
+\
+    /* Metric cards */\
+    [data-testid="metric-container"] \{\
+        background: #1c2333;\
+        border: 1px solid #2d3748;\
+        border-radius: 10px;\
+        padding: 14px 18px;\
+    \}\
+\
+    /* Section headers */\
+    .section-header \{\
+        font-size: 1.05rem;\
+        font-weight: 700;\
+        color: #90cdf4;\
+        border-left: 4px solid #3182ce;\
+        padding-left: 10px;\
+        margin: 20px 0 12px 0;\
+    \}\
+\
+    /* Risk info box */\
+    .risk-box \{\
+        background: #1a2744;\
+        border: 1px solid #3182ce;\
+        border-radius: 10px;\
+        padding: 18px;\
+        margin-top: 10px;\
+        line-height: 1.7;\
+    \}\
+\
+    /* Signal banners */\
+    .banner-bullish \{\
+        background: #1a472a;\
+        border: 1px solid #2f855a;\
+        border-radius: 10px;\
+        padding: 14px 18px;\
+        margin-bottom: 18px;\
+    \}\
+    .banner-bearish \{\
+        background: #4a1818;\
+        border: 1px solid #9b2c2c;\
+        border-radius: 10px;\
+        padding: 14px 18px;\
+        margin-bottom: 18px;\
+    \}\
+    .banner-neutral \{\
+        background: #2d3748;\
+        border: 1px solid #4a5568;\
+        border-radius: 10px;\
+        padding: 14px 18px;\
+        margin-bottom: 18px;\
+    \}\
+\
+    /* Mobile responsive tweaks */\
+    @media (max-width: 768px) \{\
+        [data-testid="metric-container"] \{ padding: 10px 12px; \}\
+        .risk-box \{ padding: 12px; \}\
+    \}\
+\
+    /* Dataframe polish */\
+    [data-testid="stDataFrame"] \{ border-radius: 8px; overflow: hidden; \}\
+</style>\
+""",\
+    unsafe_allow_html=True,\
+)\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# FTSE 100 CONSTITUENTS\
+# Note: The FTSE 100 is reviewed quarterly. This list is accurate as of 2025.\
+# All tickers use the '.L' suffix for London Stock Exchange on Yahoo Finance.\
+# If a ticker returns no data, the scanner will skip it gracefully.\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+FTSE_100 = \{\
+    "3i Group": "III.L",\
+    "Admiral Group": "ADM.L",\
+    "Anglo American": "AAL.L",\
+    "Antofagasta": "ANTO.L",\
+    "Ashtead Group": "AHT.L",\
+    "Associated British Foods": "ABF.L",\
+    "AstraZeneca": "AZN.L",\
+    "Auto Trader Group": "AUTO.L",\
+    "Aviva": "AV.L",\
+    "BAE Systems": "BA.L",\
+    "Barclays": "BARC.L",\
+    "Barratt Redrow": "BTRW.L",\
+    "Beazley": "BEZ.L",\
+    "BP": "BP.L",\
+    "British Land": "BLND.L",\
+    "BT Group": "BT-A.L",\
+    "Bunzl": "BNZL.L",\
+    "Burberry Group": "BRBY.L",\
+    "Carnival": "CCL.L",\
+    "Centrica": "CNA.L",\
+    "Compass Group": "CPG.L",\
+    "ConvaTec Group": "CTEC.L",\
+    "Croda International": "CRDA.L",\
+    "DCC": "DCC.L",\
+    "Diageo": "DGE.L",\
+    "Entain": "ENT.L",\
+    "Experian": "EXPN.L",\
+    "Ferguson Enterprises": "FERG.L",\
+    "Fresnillo": "FRES.L",\
+    "GSK": "GSK.L",\
+    "Glencore": "GLEN.L",\
+    "Haleon": "HLN.L",\
+    "Hargreaves Lansdown": "HL.L",\
+    "HSBC Holdings": "HSBA.L",\
+    "IAG": "IAG.L",\
+    "ICG (Intermediate Capital)": "ICG.L",\
+    "IMI": "IMI.L",\
+    "Imperial Brands": "IMB.L",\
+    "Informa": "INF.L",\
+    "InterContinental Hotels": "IHG.L",\
+    "Intertek Group": "ITRK.L",\
+    "JD Sports Fashion": "JD.L",\
+    "Land Securities": "LAND.L",\
+    "Legal & General": "LGEN.L",\
+    "Lloyds Banking Group": "LLOY.L",\
+    "London Stock Exchange Group": "LSEG.L",\
+    "M&G": "MNG.L",\
+    "Marks & Spencer": "MKS.L",\
+    "Melrose Industries": "MRO.L",\
+    "Mondi": "MNDI.L",\
+    "National Grid": "NG.L",\
+    "NatWest Group": "NWG.L",\
+    "Next": "NXT.L",\
+    "Ocado Group": "OCDO.L",\
+    "Pearson": "PSON.L",\
+    "Persimmon": "PSN.L",\
+    "Phoenix Group": "PHNX.L",\
+    "Prudential": "PRU.L",\
+    "Reckitt Benckiser": "RKT.L",\
+    "RELX": "REL.L",\
+    "Rentokil Initial": "RTO.L",\
+    "Rio Tinto": "RIO.L",\
+    "Rolls-Royce Holdings": "RR.L",\
+    "RS Group": "RS1.L",\
+    "Sage Group": "SGE.L",\
+    "Schroders": "SDR.L",\
+    "Scottish Mortgage IT": "SMT.L",\
+    "Segro": "SGRO.L",\
+    "Shell": "SHEL.L",\
+    "Smith & Nephew": "SN.L",\
+    "Smiths Group": "SMIN.L",\
+    "Smurfit Westrock": "SWR.L",\
+    "Spirax Group": "SPX.L",\
+    "SSE": "SSE.L",\
+    "St James's Place": "STJ.L",\
+    "Standard Chartered": "STAN.L",\
+    "Taylor Wimpey": "TW.L",\
+    "Tesco": "TSCO.L",\
+    "Unilever": "ULVR.L",\
+    "United Utilities": "UU.L",\
+    "Vistry Group": "VTY.L",\
+    "Vodafone Group": "VOD.L",\
+    "Whitbread": "WTB.L",\
+    "Wise": "WISE.L",\
+    "WPP": "WPP.L",\
+\}\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# DATA FETCHING\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+@st.cache_data(ttl=3600, show_spinner=False)\
+def fetch_ohlcv(ticker: str, days: int = 400) -> pd.DataFrame | None:\
+    """\
+    Fetch daily OHLCV (Open, High, Low, Close, Volume) data via yfinance.\
+\
+    We pull 400 days because:\
+      - SMA50 needs 50 days of data to produce its first value\
+      - 20-day avg volume needs 20 days\
+      - We want ~6 months of chart history for visual context\
+      - Buffer added for weekends/bank holidays (actual trading days < calendar days)\
+\
+    Returns None if the ticker is invalid, has no data, or the network call fails.\
+    Cache is set to 1 hour so the app doesn't re-fetch on every interaction.\
+    """\
+    try:\
+        end = datetime.date.today()\
+        # Fetch extra calendar days to account for weekends & holidays\
+        start = end - datetime.timedelta(days=days + 100)\
+\
+        df = yf.download(\
+            ticker,\
+            start=start.isoformat(),\
+            end=end.isoformat(),\
+            progress=False,\
+            auto_adjust=True,   # Adjusts for splits & dividends automatically\
+            multi_level_index=False,  # Flatten columns for single ticker\
+        )\
+\
+        if df is None or df.empty:\
+            return None\
+\
+        # yfinance sometimes returns MultiIndex columns even for single tickers\
+        # depending on version \'97 normalise here\
+        if isinstance(df.columns, pd.MultiIndex):\
+            df.columns = df.columns.get_level_values(0)\
+\
+        required_cols = ["Open", "High", "Low", "Close", "Volume"]\
+        if not all(c in df.columns for c in required_cols):\
+            return None\
+\
+        df = df[required_cols].copy()\
+        df.dropna(subset=["Close", "Volume"], inplace=True)\
+\
+        # Keep only the last `days` trading sessions so the chart isn't cluttered\
+        df = df.tail(days)\
+\
+        return df\
+\
+    except Exception:\
+        return None\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# TECHNICAL INDICATOR CALCULATIONS\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:\
+    """\
+    Calculate all technical indicators used in Felix's "Follow the Green" method.\
+\
+    \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+    \uc0\u9474   INDICATOR 1 \'97 SMA50 (50-Day Simple Moving Average)                    \u9474 \
+    \uc0\u9474   Felix uses the 50 SMA as the primary TREND FILTER.                    \u9474 \
+    \uc0\u9474   \u8594  Price ABOVE SMA50 = uptrend  \u8594  only consider long trades here       \u9474 \
+    \uc0\u9474   \u8594  Price BELOW SMA50 = downtrend \u8594  stay out or expect more weakness    \u9474 \
+    \uc0\u9474   Why SMA50? It smooths out short-term noise while still being          \u9474 \
+    \uc0\u9474   responsive enough to catch medium-term trend changes.                 \u9474 \
+    \uc0\u9500 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9508 \
+    \uc0\u9474   INDICATOR 2 \'97 Vol_MA20 (20-Day Average Volume)                        \u9474 \
+    \uc0\u9474   Establishes the "normal" level of trading activity.                   \u9474 \
+    \uc0\u9474   A self-adjusting baseline \'97 if a stock naturally trades more in       \u9474 \
+    \uc0\u9474   summer, the average adjusts, so spikes are always meaningful.         \u9474 \
+    \uc0\u9500 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9508 \
+    \uc0\u9474   INDICATOR 3 \'97 Vol_Ratio (Today's Volume / 20-Day Average)             \u9474 \
+    \uc0\u9474   This is the KEY signal metric. A ratio > 1.5 means volume is         \u9474 \
+    \uc0\u9474   50% above normal \'97 clear sign of unusual institutional participation. \u9474 \
+    \uc0\u9474   Felix's threshold: 1.5\'d7 minimum; ideally 2\'d7+ for strongest signals.  \u9474 \
+    \uc0\u9500 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9508 \
+    \uc0\u9474   INDICATOR 4 \'97 Vol_5d_Trend (Is volume rising over 5 days?)           \u9474 \
+    \uc0\u9474   A single volume spike can be noise (ex-dividend date, index           \u9474 \
+    \uc0\u9474   rebalancing, one large trade). A 5-day rising trend = sustained       \u9474 \
+    \uc0\u9474   accumulation by institutions loading a position over multiple days.   \u9474 \
+    \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 \
+    """\
+    df = df.copy()\
+\
+    # \uc0\u9472 \u9472  SMA50: 50-day Simple Moving Average on Close price \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    df["SMA50"] = df["Close"].rolling(window=50, min_periods=50).mean()\
+\
+    # \uc0\u9472 \u9472  Vol_MA20: 20-day rolling average volume \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    df["Vol_MA20"] = df["Volume"].rolling(window=20, min_periods=20).mean()\
+\
+    # \uc0\u9472 \u9472  Vol_Ratio: current volume relative to the 20-day average \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Guard against division by zero on days with no volume data\
+    df["Vol_Ratio"] = df["Volume"] / df["Vol_MA20"].replace(0, float("nan"))\
+\
+    # \uc0\u9472 \u9472  Vol_5d_Trend: is volume higher at day 5 than day 1? \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Simple but effective: compares the last day vs the first day of the window.\
+    # Returns 1.0 if trend is up, 0.0 if flat or down.\
+    df["Vol_5d_Trend"] = (\
+        df["Volume"]\
+        .rolling(window=5, min_periods=5)\
+        .apply(lambda x: 1.0 if float(x.iloc[-1]) > float(x.iloc[0]) else 0.0, raw=False)\
+    )\
+\
+    # \uc0\u9472 \u9472  Dist_SMA50_Pct: % distance of price from the 50 SMA \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Useful for finding stocks near their SMA50 (potential breakout/breakdown)\
+    # vs stocks already extended far above/below (higher risk).\
+    df["Dist_SMA50_Pct"] = ((df["Close"] - df["SMA50"]) / df["SMA50"]) * 100\
+\
+    return df\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# BIG MONEY SIGNAL DETECTION\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def detect_signals(df: pd.DataFrame) -> pd.DataFrame:\
+    """\
+    Detect Bullish Accumulation and Bearish Distribution signals.\
+\
+    \uc0\u9484 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9488 \
+    \uc0\u9474   SIGNAL 1 \'97 BULLISH ACCUMULATION (\u55357 \u57314 )                                  \u9474 \
+    \uc0\u9474                                                                          \u9474 \
+    \uc0\u9474   Condition:                                                             \u9474 \
+    \uc0\u9474     Close > SMA50           (Price is in an uptrend)                    \u9474 \
+    \uc0\u9474     AND Vol_Ratio > 1.5     (Volume is spiking \'97 institutions buying)   \u9474 \
+    \uc0\u9474     AND Vol_5d_Trend = 1    (Volume has been rising for 5 days)         \u9474 \
+    \uc0\u9474                                                                          \u9474 \
+    \uc0\u9474   Why this = Felix's "accumulation":                                     \u9474 \
+    \uc0\u9474     Institutions cannot buy millions of shares in one day without        \u9474 \
+    \uc0\u9474     crashing the price. They spread their buying over many sessions.     \u9474 \
+    \uc0\u9474     A 5-day rising volume trend + above-average volume = they are        \u9474 \
+    \uc0\u9474     LOADING UP. The fact that price is above SMA50 confirms the trend   \u9474 \
+    \uc0\u9474     is supporting their conviction. This is the "green" to follow.      \u9474 \
+    \uc0\u9500 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9508 \
+    \uc0\u9474   SIGNAL 2 \'97 BEARISH DISTRIBUTION (\u55357 \u56628 )                                  \u9474 \
+    \uc0\u9474                                                                          \u9474 \
+    \uc0\u9474   Condition:                                                             \u9474 \
+    \uc0\u9474     Close < SMA50           (Price is in a downtrend)                   \u9474 \
+    \uc0\u9474     AND Vol_Ratio > 1.5     (Volume is spiking \'97 institutions selling)  \u9474 \
+    \uc0\u9474                                                                          \u9474 \
+    \uc0\u9474   Why this = Felix's "distribution":                                     \u9474 \
+    \uc0\u9474     When smart money decides to EXIT a position, they sell into          \u9474 \
+    \uc0\u9474     any remaining buying interest. The result: high volume on DOWN       \u9474 \
+    \uc0\u9474     days below the trend line. Felix calls this "distribution" \'97        \u9474 \
+    \uc0\u9474     institutions are handing shares to retail investors at peak          \u9474 \
+    \uc0\u9474     prices before the real move down. STAY OUT of these stocks.         \u9474 \
+    \uc0\u9492 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9496 \
+    """\
+    df = df.copy()\
+\
+    # Initialise signal columns\
+    df["Signal"] = "Neutral"\
+    df["Bullish"] = False\
+    df["Bearish"] = False\
+\
+    # \uc0\u9472 \u9472  BULLISH ACCUMULATION: Three-part confirmation \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Felix's rule: all three conditions must be TRUE simultaneously.\
+    # This triple-filter greatly reduces false signals.\
+    bullish_mask = (\
+        (df["Close"] > df["SMA50"])     # Uptrend confirmed\
+        & (df["Vol_Ratio"] > 1.5)        # Volume spike: 50%+ above 20-day average\
+        & (df["Vol_5d_Trend"] == 1.0)    # 5-day rising volume trend: sustained buying\
+    )\
+    df.loc[bullish_mask, "Signal"] = "Bullish Accumulation"\
+    df.loc[bullish_mask, "Bullish"] = True\
+\
+    # \uc0\u9472 \u9472  BEARISH DISTRIBUTION: Two-part warning \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Simpler threshold \'97 price weakness + volume spike is enough for caution.\
+    # We don't require a 5-day trend because a single large sell-off is warning enough.\
+    bearish_mask = (\
+        (df["Close"] < df["SMA50"])     # Downtrend: price below trend line\
+        & (df["Vol_Ratio"] > 1.5)        # Volume spike: unusual selling pressure\
+    )\
+    df.loc[bearish_mask, "Signal"] = "Bearish Distribution"\
+    df.loc[bearish_mask, "Bearish"] = True\
+\
+    # Note: A stock can't simultaneously be above and below SMA50,\
+    # so bullish and bearish masks are always mutually exclusive.\
+\
+    return df\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# MONEY FLOW SCORE (0\'96100)\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def calculate_money_flow_score(row: pd.Series) -> int:\
+    """\
+    Composite score from 0 (very bearish) to 100 (very bullish).\
+\
+    Three components (mirroring Felix's mental checklist):\
+\
+    1. Trend Score (0\'9650 pts):\
+       Where is the price relative to SMA50?\
+       \uc0\u8594  Far above SMA50 \u8594  up to 50 pts\
+       \uc0\u8594  At SMA50 \u8594  25 pts (neutral)\
+       \uc0\u8594  Far below SMA50 \u8594  0 pts\
+\
+    2. Volume Score (0\'9635 pts):\
+       How large is the volume spike?\
+       \uc0\u8594  3\'d7 average = max 35 pts\
+       \uc0\u8594  1.5\'d7 average = ~17 pts\
+       \uc0\u8594  Average or below = 0 pts\
+\
+    3. Momentum Score (0\'9615 pts):\
+       Is volume trending upward over 5 days?\
+       \uc0\u8594  Yes = 15 pts (sustained accumulation confirmed)\
+       \uc0\u8594  No  = 0 pts\
+\
+    Felix's guideline: "Look for scores of 70+ with a clean chart setup.\
+    That's where the best risk/reward setups live."\
+\
+    Score guide:\
+        70\'96100 = Strong bullish money flow (potential buy setup)\
+        50\'9669  = Moderate / building\
+        30\'9649  = Weak / neutral\
+        0\'9629   = Bearish distribution / avoid\
+    """\
+    score = 0\
+\
+    # \uc0\u9472 \u9472  Component 1: Trend (SMA50 position) \'97 0 to 50 points \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    dist_pct = row.get("Dist_SMA50_Pct", 0.0)\
+    if pd.notna(dist_pct):\
+        # Map dist_pct from [-10%, +10%] \uc0\u8594  [0, 50] linearly, clamp at edges\
+        trend_score = 25 + (dist_pct * 2.5)          # 0% \uc0\u8594  25, +10% \u8594  50, -10% \u8594  0\
+        trend_score = max(0.0, min(50.0, trend_score))\
+        score += trend_score\
+\
+    # \uc0\u9472 \u9472  Component 2: Volume surge \'97 0 to 35 points \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    vol_ratio = row.get("Vol_Ratio", 1.0)\
+    if pd.notna(vol_ratio) and vol_ratio > 1.0:\
+        # Maps 1.0\'d7 \uc0\u8594  0 pts, 3.0\'d7 \u8594  35 pts (linear, capped at 35)\
+        vol_score = ((vol_ratio - 1.0) / 2.0) * 35\
+        vol_score = max(0.0, min(35.0, vol_score))\
+        score += vol_score\
+\
+    # \uc0\u9472 \u9472  Component 3: Volume momentum \'97 0 or 15 points \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    vol_trend = row.get("Vol_5d_Trend", 0.0)\
+    if pd.notna(vol_trend) and vol_trend == 1.0:\
+        score += 15  # 5-day rising volume trend = sustained smart money activity\
+\
+    return int(max(0, min(100, round(score))))\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# CHART BUILDER\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def build_chart(df: pd.DataFrame, ticker: str, company_name: str = "") -> go.Figure:\
+    """\
+    Build an interactive Plotly chart matching Felix's webinar style:\
+\
+    Panel 1 (70% height) \'97 Candlestick chart:\
+        \'95 Green candles  = up days (close > open)\
+        \'95 Red candles    = down days (close < open)\
+        \'95 Thick blue line = SMA50 (the trend filter)\
+        \'95 Green arrows \uc0\u8593   = Bullish Accumulation signals\
+        \'95 Red arrows \uc0\u8595     = Bearish Distribution signals\
+\
+    Panel 2 (30% height) \'97 Volume bars:\
+        \'95 GREEN bar = volume > 1.5\'d7 20-day average (big money active)\
+        \'95 RED bar   = normal volume (no institutional signal)\
+        \'95 Orange dotted line = 20-day average volume baseline\
+    """\
+    title = f"\{company_name\} (\{ticker\})" if company_name else ticker\
+\
+    # Two-panel layout: price chart + volume bar chart\
+    fig = make_subplots(\
+        rows=2,\
+        cols=1,\
+        shared_xaxes=True,      # Lock x-axis zoom/pan between panels\
+        vertical_spacing=0.04,\
+        row_heights=[0.70, 0.30],\
+        subplot_titles=["", "Volume"],\
+    )\
+\
+    # \uc0\u9472 \u9472  Panel 1a: Candlestick Chart \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Green body = buying pressure (close > open)\
+    # Red body   = selling pressure (close < open)\
+    # Felix uses candlesticks to see the daily battle between bulls and bears.\
+    fig.add_trace(\
+        go.Candlestick(\
+            x=df.index,\
+            open=df["Open"],\
+            high=df["High"],\
+            low=df["Low"],\
+            close=df["Close"],\
+            name="Price",\
+            increasing_line_color="#00c853",    # Green wick on up days\
+            decreasing_line_color="#ff1744",    # Red wick on down days\
+            increasing_fillcolor="#00c853",     # Solid green body\
+            decreasing_fillcolor="#ff1744",     # Solid red body\
+            whiskerwidth=0.4,\
+        ),\
+        row=1,\
+        col=1,\
+    )\
+\
+    # \uc0\u9472 \u9472  Panel 1b: SMA50 Line \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Thick, bright blue line \'97 the primary trend filter.\
+    # Felix's simple rule: trade in the direction of this line.\
+    # Price crossing ABOVE \uc0\u8594  potential entry signal\
+    # Price crossing BELOW \uc0\u8594  exit or stand aside\
+    fig.add_trace(\
+        go.Scatter(\
+            x=df.index,\
+            y=df["SMA50"],\
+            name="SMA 50",\
+            line=dict(color="#2196f3", width=2.5),   # Thick blue (matches Felix's chart)\
+            opacity=0.95,\
+            hovertemplate="SMA50: %\{y:.2f\}p<extra></extra>",\
+        ),\
+        row=1,\
+        col=1,\
+    )\
+\
+    # \uc0\u9472 \u9472  Panel 1c: Bullish Accumulation Arrows (\u8593 ) \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Green up-arrows placed just BELOW each bullish signal candle.\
+    # This is where Felix says: "This is the footprint of smart money buying."\
+    bullish_days = df[df["Bullish"] == True]\
+    if not bullish_days.empty:\
+        fig.add_trace(\
+            go.Scatter(\
+                x=bullish_days.index,\
+                y=bullish_days["Low"] * 0.975,   # Position slightly below the low\
+                mode="markers",\
+                name="Bullish Accumulation",\
+                marker=dict(\
+                    symbol="arrow-up",\
+                    size=13,\
+                    color="#00e676",                # Bright lime green\
+                    line=dict(color="#ffffff", width=1.5),\
+                ),\
+                hovertemplate=(\
+                    "<b>\uc0\u55357 \u57314  Bullish Accumulation</b><br>"\
+                    "Date: %\{x|%d %b %Y\}<br>"\
+                    "Close: %\{customdata[0]:.2f\}p<br>"\
+                    "Vol Ratio: %\{customdata[1]:.2f\}\'d7<br>"\
+                    "vs SMA50: %\{customdata[2]:+.1f\}%<br>"\
+                    "<extra></extra>"\
+                ),\
+                customdata=list(\
+                    zip(\
+                        bullish_days["Close"],\
+                        bullish_days["Vol_Ratio"].fillna(0),\
+                        bullish_days["Dist_SMA50_Pct"].fillna(0),\
+                    )\
+                ),\
+            ),\
+            row=1,\
+            col=1,\
+        )\
+\
+    # \uc0\u9472 \u9472  Panel 1d: Bearish Distribution Arrows (\u8595 ) \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Red down-arrows placed just ABOVE each bearish signal candle.\
+    # Felix's warning: "Smart money is unloading here \'97 don't be the buyer."\
+    bearish_days = df[df["Bearish"] == True]\
+    if not bearish_days.empty:\
+        fig.add_trace(\
+            go.Scatter(\
+                x=bearish_days.index,\
+                y=bearish_days["High"] * 1.025,  # Position slightly above the high\
+                mode="markers",\
+                name="Bearish Distribution",\
+                marker=dict(\
+                    symbol="arrow-down",\
+                    size=13,\
+                    color="#ff5252",                # Bright red\
+                    line=dict(color="#ffffff", width=1.5),\
+                ),\
+                hovertemplate=(\
+                    "<b>\uc0\u55357 \u56628  Bearish Distribution</b><br>"\
+                    "Date: %\{x|%d %b %Y\}<br>"\
+                    "Close: %\{customdata[0]:.2f\}p<br>"\
+                    "Vol Ratio: %\{customdata[1]:.2f\}\'d7<br>"\
+                    "vs SMA50: %\{customdata[2]:+.1f\}%<br>"\
+                    "<extra></extra>"\
+                ),\
+                customdata=list(\
+                    zip(\
+                        bearish_days["Close"],\
+                        bearish_days["Vol_Ratio"].fillna(0),\
+                        bearish_days["Dist_SMA50_Pct"].fillna(0),\
+                    )\
+                ),\
+            ),\
+            row=1,\
+            col=1,\
+        )\
+\
+    # \uc0\u9472 \u9472  Panel 2a: Volume Bars \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # GREEN bar = volume spike (> 1.5\'d7 average) \uc0\u8594  big money is active\
+    # RED bar   = normal or low volume \uc0\u8594  no special signal\
+    # This colour coding makes it instantly obvious when unusual activity occurs.\
+    volume_colors = [\
+        "#00c853" if (pd.notna(r) and r > 1.5) else "#ef5350"\
+        for r in df["Vol_Ratio"].fillna(0)\
+    ]\
+\
+    fig.add_trace(\
+        go.Bar(\
+            x=df.index,\
+            y=df["Volume"],\
+            name="Volume",\
+            marker_color=volume_colors,\
+            opacity=0.75,\
+            hovertemplate=(\
+                "Date: %\{x|%d %b %Y\}<br>"\
+                "Volume: %\{y:,.0f\}<br>"\
+                "<extra></extra>"\
+            ),\
+        ),\
+        row=2,\
+        col=1,\
+    )\
+\
+    # \uc0\u9472 \u9472  Panel 2b: 20-day Average Volume Line \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Orange dotted line shows the "normal" baseline.\
+    # Bars shooting above this line = unusual interest.\
+    fig.add_trace(\
+        go.Scatter(\
+            x=df.index,\
+            y=df["Vol_MA20"],\
+            name="Vol MA20",\
+            line=dict(color="#ffa726", width=1.5, dash="dot"),\
+            opacity=0.8,\
+            hovertemplate="20d Avg Vol: %\{y:,.0f\}<extra></extra>",\
+        ),\
+        row=2,\
+        col=1,\
+    )\
+\
+    # \uc0\u9472 \u9472  Signal Shading: Highlight signal days with subtle background \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    # Only shade the last 90 days to keep the chart readable\
+    signal_window = df.tail(90)\
+    for idx, row_data in signal_window.iterrows():\
+        if row_data.get("Bullish"):\
+            fig.add_vrect(\
+                x0=idx,\
+                x1=idx,\
+                fillcolor="rgba(0, 200, 83, 0.12)",\
+                layer="below",\
+                line_width=0,\
+            )\
+        elif row_data.get("Bearish"):\
+            fig.add_vrect(\
+                x0=idx,\
+                x1=idx,\
+                fillcolor="rgba(255, 23, 68, 0.10)",\
+                layer="below",\
+                line_width=0,\
+            )\
+\
+    # \uc0\u9472 \u9472  Chart Layout: Dark Theme \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    fig.update_layout(\
+        title=dict(\
+            text=f"<b>\{title\}</b>   |   FTSE Follow the Green Scanner",\
+            font=dict(size=15, color="#e2e8f0"),\
+            x=0.01,\
+        ),\
+        paper_bgcolor="#0e1117",\
+        plot_bgcolor="#161b27",\
+        font=dict(color="#a0aec0", size=11),\
+        xaxis_rangeslider_visible=False,   # Hide the default rangeslider (cleaner)\
+        legend=dict(\
+            orientation="h",\
+            yanchor="bottom",\
+            y=1.02,\
+            xanchor="left",\
+            x=0.0,\
+            bgcolor="rgba(22, 27, 39, 0.85)",\
+            bordercolor="#2d3748",\
+            borderwidth=1,\
+            font=dict(size=10),\
+        ),\
+        margin=dict(l=10, r=15, t=65, b=10),\
+        hovermode="x unified",\
+        height=640,\
+    )\
+\
+    # Grid and spike lines for readability\
+    fig.update_xaxes(\
+        gridcolor="#1f2937",\
+        showgrid=True,\
+        zeroline=False,\
+        showspikes=True,\
+        spikecolor="#4a5568",\
+        spikemode="across",\
+        spikethickness=1,\
+        spikesnap="cursor",\
+    )\
+    fig.update_yaxes(gridcolor="#1f2937", showgrid=True, zeroline=False)\
+\
+    # Format volume y-axis with compact notation (e.g. 10M, 50k)\
+    fig.update_yaxes(tickformat=".3s", row=2, col=1)\
+\
+    return fig\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# SCANNER \'97 Process multiple tickers in sequence\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def scan_tickers(ticker_dict: dict) -> pd.DataFrame:\
+    """\
+    Scan all provided tickers, calculate indicators & signals, and return\
+    a summary DataFrame with one row per ticker.\
+\
+    Columns returned:\
+        Company, Ticker, Price (p), Signal, % from SMA50,\
+        20d Avg Vol, Vol Ratio, Money Flow Score\
+    """\
+    results = []\
+    tickers = list(ticker_dict.items())\
+    total = len(tickers)\
+\
+    progress_bar = st.progress(0, text="Initialising scanner...")\
+    status_text = st.empty()\
+\
+    for i, (company, ticker) in enumerate(tickers):\
+        pct = (i + 1) / total\
+        progress_bar.progress(pct, text=f"Scanning \{ticker\}  (\{i+1\}/\{total\})")\
+        status_text.markdown(\
+            f"<small style='color:#718096;'>Loading: \{ticker\} \'97 \{company\}</small>",\
+            unsafe_allow_html=True,\
+        )\
+\
+        df = fetch_ohlcv(ticker)\
+\
+        base_row = \{\
+            "Company": company,\
+            "Ticker": ticker,\
+            "Price (p)": None,\
+            "Signal": "No Data",\
+            "% from SMA50": None,\
+            "20d Avg Vol": None,\
+            "Vol Ratio": None,\
+            "Money Flow Score": None,\
+        \}\
+\
+        # Need at least 55 rows to compute SMA50 (50 days) with some buffer\
+        if df is None or len(df) < 55:\
+            results.append(base_row)\
+            continue\
+\
+        try:\
+            df = calculate_indicators(df)\
+            df = detect_signals(df)\
+            latest = df.iloc[-1]\
+            mfs = calculate_money_flow_score(latest)\
+\
+            results.append(\{\
+                "Company": company,\
+                "Ticker": ticker,\
+                "Price (p)": round(float(latest["Close"]), 2),\
+                "Signal": str(latest["Signal"]),\
+                "% from SMA50": (\
+                    round(float(latest["Dist_SMA50_Pct"]), 2)\
+                    if pd.notna(latest["Dist_SMA50_Pct"])\
+                    else None\
+                ),\
+                "20d Avg Vol": (\
+                    int(latest["Vol_MA20"])\
+                    if pd.notna(latest["Vol_MA20"])\
+                    else None\
+                ),\
+                "Vol Ratio": (\
+                    round(float(latest["Vol_Ratio"]), 2)\
+                    if pd.notna(latest["Vol_Ratio"])\
+                    else None\
+                ),\
+                "Money Flow Score": mfs,\
+            \})\
+\
+        except Exception:\
+            base_row["Signal"] = "Error"\
+            results.append(base_row)\
+\
+    progress_bar.empty()\
+    status_text.empty()\
+\
+    return pd.DataFrame(results)\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# RISK MANAGEMENT HELPER\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def calculate_position_size(\
+    price_pence: float,\
+    risk_gbp: float = 750.0,\
+    stop_loss_pct: float = 0.10,\
+) -> dict:\
+    """\
+    Felix's 1% Rule Position Sizing.\
+\
+    The core principle:\
+        "Never risk more than 1% of your account on any single trade."\
+\
+    Here we use a fixed \'a3750 risk amount (user's "1% of portfolio").\
+    The stop loss is set at X% below the entry price.\
+\
+    Formula:\
+        Risk per share (\'a3) = Entry price (\'a3) \'d7 Stop loss %\
+        Max shares         = Total risk (\'a3) / Risk per share (\'a3)\
+        Position value (\'a3) = Max shares \'d7 Entry price (\'a3)\
+\
+    Example at 10% stop:\
+        Stock at 500p = \'a35.00\
+        Risk per share = \'a35.00 \'d7 10% = \'a30.50\
+        Max shares = \'a3750 / \'a30.50 = 1,500 shares\
+        Position value = 1,500 \'d7 \'a35.00 = \'a37,500\
+\
+    If the stock drops 10% \uc0\u8594  you lose exactly \'a3750 (your 1% rule limit).\
+    This keeps any single loss from materially damaging your portfolio.\
+    """\
+    price_gbp = price_pence / 100.0           # Convert pence \uc0\u8594  pounds\
+    risk_per_share = price_gbp * stop_loss_pct\
+    num_shares = risk_gbp / risk_per_share\
+    position_value = num_shares * price_gbp\
+    stop_price_pence = price_pence * (1.0 - stop_loss_pct)\
+    potential_reward = position_value * (stop_loss_pct * 2)  # Assumes 2:1 reward/risk\
+\
+    return \{\
+        "Entry Price": f"\{price_pence:.2f\}p  (\'a3\{price_gbp:.2f\})",\
+        "Stop Loss Price": f"\{stop_price_pence:.2f\}p  (\'a3\{stop_price_pence/100:.2f\})",\
+        "Stop Loss %": f"\{stop_loss_pct * 100:.0f\}% below entry",\
+        "Max Shares to Buy": f"\{int(num_shares):,\} shares",\
+        "Max Position Value": f"\'a3\{position_value:,.0f\}",\
+        "Max Risk (\'a3)": f"\'a3\{risk_gbp:,.0f\}",\
+        "Target Reward (2:1)": f"\'a3\{potential_reward:,.0f\}",\
+    \}\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+# MAIN APP ENTRY POINT\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+\
+\
+def main():\
+\
+    # \uc0\u9472 \u9472  App Header \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    st.markdown(\
+        """\
+    <div style="background: linear-gradient(135deg, #1a2744 0%, #121827 100%);\
+                padding: 22px 26px; border-radius: 12px; margin-bottom: 22px;\
+                border: 1px solid #2d3748;">\
+        <h1 style="margin:0 0 6px 0; color:#90cdf4; font-size:1.75rem; font-weight:800;">\
+            \uc0\u55357 \u56520  FTSE Follow the Green Scanner\
+        </h1>\
+        <p style="margin:0; color:#718096; font-size:0.92rem; line-height:1.5;">\
+            Detect institutional money flow in FTSE 100 stocks using Felix's\
+            <em>"Follow the Money"</em> methodology.<br>\
+            <span style="color:#4a5568; font-size:0.82rem;">\
+            \uc0\u9888 \u65039  Educational tool only \'97 not financial advice. Always do your own research.\
+            </span>\
+        </p>\
+    </div>\
+    """,\
+        unsafe_allow_html=True,\
+    )\
+\
+    # \uc0\u9472 \u9472  Sidebar \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    with st.sidebar:\
+        st.markdown("## \uc0\u9881 \u65039  Scanner Settings")\
+        st.markdown("---")\
+\
+        # \uc0\u9472 \u9472  Mode Selection \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        scan_mode = st.radio(\
+            "Scan Mode",\
+            ["\uc0\u55357 \u56590  Single Stock", "\u55357 \u56523  Custom List", "\u55356 \u56812 \u55356 \u56807  Full FTSE 100"],\
+            index=0,\
+            help=(\
+                "Single Stock: chart one ticker in detail\\n"\
+                "Custom List: paste or upload your own tickers\\n"\
+                "Full FTSE 100: scan all ~80 FTSE 100 stocks (takes ~2 min)"\
+            ),\
+        )\
+\
+        selected_tickers = \{\}\
+\
+        # \uc0\u9472 \u9472  Single Stock Mode \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        if scan_mode == "\uc0\u55357 \u56590  Single Stock":\
+            company_list = sorted(FTSE_100.keys())\
+            selected_company = st.selectbox(\
+                "Select FTSE 100 Stock", company_list, index=company_list.index("AstraZeneca")\
+            )\
+\
+            st.markdown("<small style='color:#4a5568;'>Or override with any ticker:</small>", unsafe_allow_html=True)\
+            manual_ticker = st.text_input(\
+                "Custom ticker (e.g. VOD.L)",\
+                placeholder="TICKER.L",\
+                label_visibility="collapsed",\
+            ).strip().upper()\
+\
+            if manual_ticker:\
+                # Add .L suffix if user forgot it\
+                if not manual_ticker.endswith(".L"):\
+                    manual_ticker += ".L"\
+                selected_tickers = \{manual_ticker: manual_ticker\}\
+            else:\
+                selected_tickers = \{selected_company: FTSE_100[selected_company]\}\
+\
+        # \uc0\u9472 \u9472  Custom List Mode \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        elif scan_mode == "\uc0\u55357 \u56523  Custom List":\
+            uploaded = st.file_uploader(\
+                "Upload .txt / .csv (one ticker per line)",\
+                type=["txt", "csv"],\
+            )\
+            pasted = st.text_area(\
+                "Or paste tickers (one per line)",\
+                height=140,\
+                placeholder="BARC.L\\nLLOY.L\\nAZN.L\\nSHEL.L",\
+            )\
+\
+            raw = []\
+            if uploaded:\
+                content = uploaded.read().decode("utf-8")\
+                raw = [t.strip().upper() for t in content.splitlines() if t.strip()]\
+            elif pasted:\
+                raw = [t.strip().upper() for t in pasted.splitlines() if t.strip()]\
+\
+            # Auto-append .L if missing\
+            raw = [t if t.endswith(".L") else f"\{t\}.L" for t in raw]\
+            selected_tickers = \{t: t for t in raw\}\
+\
+            if selected_tickers:\
+                st.success(f"\uc0\u9989  \{len(selected_tickers)\} tickers loaded")\
+\
+        # \uc0\u9472 \u9472  Full FTSE 100 Mode \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        else:\
+            selected_tickers = FTSE_100.copy()\
+            st.success(f"\uc0\u9989  \{len(selected_tickers)\} FTSE 100 stocks loaded")\
+            st.info("\uc0\u9201 \u65039  Full scan takes approximately 2\'963 minutes.")\
+\
+        st.markdown("---")\
+\
+        # \uc0\u9472 \u9472  Filters \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        st.markdown("### \uc0\u55357 \u56589  Filter & Sort")\
+\
+        filter_mode = st.selectbox(\
+            "Filter Signals",\
+            ["Show All", "\uc0\u55357 \u57314  Bullish Only", "\u55357 \u56628  Bearish Only", "\u9898  Neutral Only"],\
+        )\
+\
+        sort_by = st.selectbox(\
+            "Sort Results By",\
+            [\
+                "Money Flow Score \uc0\u8595 ",\
+                "Volume Ratio \uc0\u8595 ",\
+                "% above SMA50 \uc0\u8595 ",\
+                "Company A\uc0\u8594 Z",\
+            ],\
+        )\
+\
+        st.markdown("---")\
+\
+        # \uc0\u9472 \u9472  Risk Settings \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        st.markdown("### \uc0\u55357 \u56496  Risk Management")\
+        risk_amount = st.number_input(\
+            "Max risk per trade (\'a3)",\
+            min_value=50,\
+            max_value=10000,\
+            value=750,\
+            step=50,\
+            help="Felix's 1% Rule: this should be ~1% of your total portfolio.",\
+        )\
+        stop_loss_pct = (\
+            st.slider(\
+                "Stop loss %",\
+                min_value=2,\
+                max_value=25,\
+                value=10,\
+                help="% below entry price where you'd exit the trade.",\
+            )\
+            / 100.0\
+        )\
+\
+        st.markdown("---")\
+        st.markdown(\
+            """\
+        <div style="color:#4a5568; font-size:0.78rem; line-height:1.6;">\
+        <b style="color:#718096;">Felix's Core Rules:</b><br>\
+        1. Price must be above SMA50<br>\
+        2. Volume must spike (>1.5\'d7 avg)<br>\
+        3. Volume trend must be rising<br>\
+        4. Risk no more than 1% per trade<br>\
+        5. Target 2:1 reward-to-risk minimum<br><br>\
+        <em>"Follow the green \'97 follow the money."</em>\
+        </div>\
+        """,\
+            unsafe_allow_html=True,\
+        )\
+\
+    # \uc0\u9472 \u9472  No tickers selected guard \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+    if not selected_tickers:\
+        st.info("\uc0\u55357 \u56392  Select stocks in the sidebar to begin scanning.")\
+        return\
+\
+    # \uc0\u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \
+    # SINGLE STOCK DETAILED VIEW\
+    # \uc0\u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \
+    is_single = (scan_mode == "\uc0\u55357 \u56590  Single Stock") or (\
+        scan_mode == "\uc0\u55357 \u56523  Custom List" and len(selected_tickers) == 1\
+    )\
+\
+    if is_single:\
+        company_name, ticker = list(selected_tickers.items())[0]\
+\
+        with st.spinner(f"Loading data for **\{ticker\}**..."):\
+            df = fetch_ohlcv(ticker)\
+\
+        # \uc0\u9472 \u9472  Error handling \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        if df is None or df.empty:\
+            st.error(\
+                f"\uc0\u10060  Could not load data for **\{ticker\}**.\\n\\n"\
+                "Please check:\\n"\
+                "- The ticker symbol is correct (must end in `.L` for LSE)\\n"\
+                "- Your internet connection\\n"\
+                "- Yahoo Finance may have changed this ticker"\
+            )\
+            return\
+\
+        if len(df) < 55:\
+            st.warning(\
+                f"\uc0\u9888 \u65039  Insufficient data for **\{ticker\}** "\
+                f"(found \{len(df)\} trading days, need at least 55 for SMA50)."\
+            )\
+            return\
+\
+        df = calculate_indicators(df)\
+        df = detect_signals(df)\
+        latest = df.iloc[-1]\
+        prev = df.iloc[-2] if len(df) > 1 else latest\
+        mfs = calculate_money_flow_score(latest)\
+\
+        signal = str(latest["Signal"])\
+\
+        # \uc0\u9472 \u9472  Signal Banner \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        if signal == "Bullish Accumulation":\
+            st.markdown(\
+                f"""\
+            <div class="banner-bullish">\
+                <div style="font-size:1.25rem; font-weight:800; color:#68d391;">\
+                    \uc0\u55357 \u57314  BULLISH ACCUMULATION DETECTED \'97 \{ticker\}\
+                </div>\
+                <div style="margin-top:6px; color:#9ae6b4; font-size:0.92rem; line-height:1.6;">\
+                    Price is <strong>above the 50 SMA</strong>, volume is\
+                    <strong>\{float(latest['Vol_Ratio']):.1f\}\'d7 the 20-day average</strong>,\
+                    and volume has been <strong>rising for 5 days</strong>.<br>\
+                    Felix's signal: <em>"Institutions are loading up. Follow the green."</em>\
+                </div>\
+            </div>\
+            """,\
+                unsafe_allow_html=True,\
+            )\
+        elif signal == "Bearish Distribution":\
+            st.markdown(\
+                f"""\
+            <div class="banner-bearish">\
+                <div style="font-size:1.25rem; font-weight:800; color:#fc8181;">\
+                    \uc0\u55357 \u56628  BEARISH DISTRIBUTION SIGNAL \'97 \{ticker\}\
+                </div>\
+                <div style="margin-top:6px; color:#feb2b2; font-size:0.92rem; line-height:1.6;">\
+                    Price is <strong>below the 50 SMA</strong> with a volume spike of\
+                    <strong>\{float(latest['Vol_Ratio']):.1f\}\'d7 normal</strong>.<br>\
+                    Felix's warning: <em>"Smart money is exiting. Avoid new longs."</em>\
+                </div>\
+            </div>\
+            """,\
+                unsafe_allow_html=True,\
+            )\
+        else:\
+            st.markdown(\
+                f"""\
+            <div class="banner-neutral">\
+                <div style="font-size:1.15rem; font-weight:700; color:#a0aec0;">\
+                    \uc0\u9898  NEUTRAL \'97 No Big Money Signal Today \'97 \{ticker\}\
+                </div>\
+                <div style="margin-top:6px; color:#718096; font-size:0.9rem;">\
+                    No unusual volume spike or trend confirmation detected.\
+                    Continue monitoring. <em>"When in doubt, stay out."</em>\
+                </div>\
+            </div>\
+            """,\
+                unsafe_allow_html=True,\
+            )\
+\
+        # \uc0\u9472 \u9472  Key Metric Cards \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        col1, col2, col3, col4, col5 = st.columns(5)\
+\
+        day_change_pct = ((float(latest["Close"]) / float(prev["Close"])) - 1.0) * 100\
+        with col1:\
+            st.metric(\
+                "Current Price",\
+                f"\{float(latest['Close']):.2f\}p",\
+                delta=f"\{day_change_pct:+.2f\}% today",\
+                delta_color="normal" if day_change_pct >= 0 else "inverse",\
+            )\
+\
+        dist = float(latest["Dist_SMA50_Pct"]) if pd.notna(latest["Dist_SMA50_Pct"]) else 0.0\
+        with col2:\
+            st.metric(\
+                "vs 50 SMA",\
+                f"\{dist:+.1f\}%",\
+                delta="Above trend" if dist > 0 else "Below trend",\
+                delta_color="normal" if dist > 0 else "inverse",\
+            )\
+\
+        vol_ratio = float(latest["Vol_Ratio"]) if pd.notna(latest["Vol_Ratio"]) else 0.0\
+        with col3:\
+            st.metric(\
+                "Volume Ratio",\
+                f"\{vol_ratio:.2f\}\'d7",\
+                delta="\uc0\u55357 \u57314  SPIKE" if vol_ratio > 1.5 else "Normal",\
+                delta_color="normal" if vol_ratio > 1.5 else "off",\
+            )\
+\
+        avg_vol = int(latest["Vol_MA20"]) if pd.notna(latest["Vol_MA20"]) else 0\
+        with col4:\
+            st.metric("20d Avg Volume", f"\{avg_vol:,\}")\
+\
+        score_label = "Strong \uc0\u55357 \u56613 " if mfs >= 70 else ("Moderate" if mfs >= 40 else "Weak \u10052 \u65039 ")\
+        with col5:\
+            st.metric(\
+                "Money Flow Score",\
+                f"\{mfs\} / 100",\
+                delta=score_label,\
+                delta_color="normal" if mfs >= 70 else ("off" if mfs >= 40 else "inverse"),\
+            )\
+\
+        # \uc0\u9472 \u9472  Chart \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        fig = build_chart(df, ticker, company_name)\
+        st.plotly_chart(fig, use_container_width=True)\
+\
+        # \uc0\u9472 \u9472  Signal Summary Table \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        st.markdown(\
+            '<div class="section-header">\uc0\u55357 \u56522  Current Signal Summary</div>',\
+            unsafe_allow_html=True,\
+        )\
+\
+        summary_data = \{\
+            "Metric": [\
+                "Current Signal",\
+                "Last Close",\
+                "50-Day SMA",\
+                "% Distance from SMA50",\
+                "Today's Volume",\
+                "20-Day Avg Volume",\
+                "Volume Ratio (\'d7 avg)",\
+                "Volume 5d Trend",\
+                "Money Flow Score",\
+            ],\
+            "Value": [\
+                signal,\
+                f"\{float(latest['Close']):.2f\}p",\
+                f"\{float(latest['SMA50']):.2f\}p" if pd.notna(latest["SMA50"]) else "N/A",\
+                f"\{dist:+.2f\}%",\
+                f"\{int(latest['Volume']):,\}",\
+                f"\{avg_vol:,\}",\
+                f"\{vol_ratio:.2f\}\'d7",\
+                "Rising \uc0\u8593 " if latest.get("Vol_5d_Trend") == 1.0 else "Flat/Falling \u8595 ",\
+                f"\{mfs\}/100 \'97 \{score_label\}",\
+            ],\
+        \}\
+\
+        col_t1, col_t2 = st.columns([1, 1])\
+        with col_t1:\
+            st.dataframe(\
+                pd.DataFrame(summary_data),\
+                use_container_width=True,\
+                hide_index=True,\
+            )\
+\
+        # \uc0\u9472 \u9472  Risk Management Panel \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        with col_t2:\
+            risk_data = calculate_position_size(\
+                float(latest["Close"]), risk_amount, stop_loss_pct\
+            )\
+            rows_html = "".join(\
+                f'<div style="display:flex; justify-content:space-between; padding:4px 0; '\
+                f'border-bottom:1px solid #2d3748;">'\
+                f'<span style="color:#718096; font-size:0.88rem;">\{k\}</span>'\
+                f'<span style="color:#e2e8f0; font-weight:600; font-size:0.88rem;">\{v\}</span>'\
+                f"</div>"\
+                for k, v in risk_data.items()\
+            )\
+            st.markdown(\
+                f"""\
+            <div class="risk-box">\
+                <div style="color:#90cdf4; font-weight:700; font-size:1rem; margin-bottom:10px;">\
+                    \uc0\u55357 \u56496  Position Sizing \'97 Felix's 1% Rule\
+                </div>\
+                \{rows_html\}\
+                <div style="color:#4a5568; font-size:0.78rem; margin-top:10px; line-height:1.5;">\
+                    If price drops \{stop_loss_pct*100:.0f\}% to the stop, max loss = \'a3\{risk_amount:,\}.\
+                    Target at least 2\'d7 that in profit before entering.\
+                </div>\
+            </div>\
+            """,\
+                unsafe_allow_html=True,\
+            )\
+\
+        # \uc0\u9472 \u9472  Recent Signal History \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        st.markdown(\
+            '<div class="section-header">\uc0\u55357 \u56523  Recent Signal History (Last 60 Days)</div>',\
+            unsafe_allow_html=True,\
+        )\
+\
+        history = (\
+            df[df["Signal"] != "Neutral"]\
+            .tail(60)[["Close", "Volume", "Vol_Ratio", "Dist_SMA50_Pct", "Signal"]]\
+            .copy()\
+        )\
+\
+        if history.empty:\
+            st.info("No bullish or bearish signals in the last 60 days for this ticker.")\
+        else:\
+            history.index = pd.to_datetime(history.index).strftime("%d %b %Y")\
+            history.columns = ["Close (p)", "Volume", "Vol Ratio (\'d7)", "% from SMA50", "Signal"]\
+            history["Close (p)"] = history["Close (p)"].round(2)\
+            history["Vol Ratio (\'d7)"] = history["Vol Ratio (\'d7)"].round(2)\
+            history["% from SMA50"] = history["% from SMA50"].round(2)\
+            history = history.iloc[::-1]   # Most recent first\
+\
+            st.dataframe(\
+                history,\
+                use_container_width=True,\
+                column_config=\{\
+                    "Signal": st.column_config.TextColumn("Signal", width="large"),\
+                    "Vol Ratio (\'d7)": st.column_config.NumberColumn(format="%.2f\'d7"),\
+                    "% from SMA50": st.column_config.NumberColumn(format="%+.2f%%"),\
+                    "Volume": st.column_config.NumberColumn(format="%,d"),\
+                \},\
+            )\
+\
+        # \uc0\u9472 \u9472  Export \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        st.markdown(\
+            '<div class="section-header">\uc0\u55357 \u56549  Export Data</div>',\
+            unsafe_allow_html=True,\
+        )\
+        export_df = df[["Open", "High", "Low", "Close", "Volume", "SMA50", "Vol_MA20", "Vol_Ratio", "Dist_SMA50_Pct", "Signal"]].copy()\
+        export_df.index.name = "Date"\
+        csv_buf = io.StringIO()\
+        export_df.to_csv(csv_buf)\
+        st.download_button(\
+            "\uc0\u11015 \u65039  Export Full History to CSV",\
+            data=csv_buf.getvalue(),\
+            file_name=f"\{ticker\}_signals_\{datetime.date.today().isoformat()\}.csv",\
+            mime="text/csv",\
+        )\
+\
+    # \uc0\u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \
+    # MULTI-TICKER SCAN VIEW\
+    # \uc0\u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \u9552 \
+    else:\
+        st.markdown(\
+            f'<div class="section-header">\uc0\u55357 \u56589  Scanning \{len(selected_tickers)\} Stocks...</div>',\
+            unsafe_allow_html=True,\
+        )\
+\
+        results_df = scan_tickers(selected_tickers)\
+\
+        if results_df.empty:\
+            st.error("Scanner returned no results. Please check your ticker list.")\
+            return\
+\
+        # \uc0\u9472 \u9472  Summary Statistics \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        valid_df = results_df[~results_df["Signal"].isin(["No Data", "Error"])]\
+        bullish_n = int((valid_df["Signal"] == "Bullish Accumulation").sum())\
+        bearish_n = int((valid_df["Signal"] == "Bearish Distribution").sum())\
+        neutral_n = int((valid_df["Signal"] == "Neutral").sum())\
+        total_n = len(valid_df)\
+\
+        c1, c2, c3, c4 = st.columns(4)\
+        c1.metric("Stocks Scanned", total_n)\
+        c2.metric("\uc0\u55357 \u57314  Bullish Accumulation", bullish_n)\
+        c3.metric("\uc0\u55357 \u56628  Bearish Distribution", bearish_n)\
+        c4.metric("\uc0\u9898  Neutral", neutral_n)\
+\
+        st.markdown("---")\
+\
+        # \uc0\u9472 \u9472  Apply Filters \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        filtered = results_df.copy()\
+\
+        if filter_mode == "\uc0\u55357 \u57314  Bullish Only":\
+            filtered = filtered[filtered["Signal"] == "Bullish Accumulation"]\
+        elif filter_mode == "\uc0\u55357 \u56628  Bearish Only":\
+            filtered = filtered[filtered["Signal"] == "Bearish Distribution"]\
+        elif filter_mode == "\uc0\u9898  Neutral Only":\
+            filtered = filtered[filtered["Signal"] == "Neutral"]\
+\
+        # \uc0\u9472 \u9472  Apply Sort \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        if sort_by == "Money Flow Score \uc0\u8595 ":\
+            filtered = filtered.sort_values("Money Flow Score", ascending=False, na_position="last")\
+        elif sort_by == "Volume Ratio \uc0\u8595 ":\
+            filtered = filtered.sort_values("Vol Ratio", ascending=False, na_position="last")\
+        elif sort_by == "% above SMA50 \uc0\u8595 ":\
+            filtered = filtered.sort_values("% from SMA50", ascending=False, na_position="last")\
+        elif sort_by == "Company A\uc0\u8594 Z":\
+            filtered = filtered.sort_values("Company")\
+\
+        st.markdown(\
+            f"**Showing \{len(filtered)\} of \{len(results_df)\} tickers** "\
+            f"(filter: \{filter_mode\} | sort: \{sort_by\})"\
+        )\
+\
+        # \uc0\u9472 \u9472  Results Table \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+        if filtered.empty:\
+            st.info("No tickers match the current filter. Try **Show All**.")\
+        else:\
+            st.dataframe(\
+                filtered,\
+                use_container_width=True,\
+                height=min(550, 65 + len(filtered) * 38),\
+                hide_index=True,\
+                column_config=\{\
+                    "Signal": st.column_config.TextColumn("Signal", width="large"),\
+                    "% from SMA50": st.column_config.NumberColumn(\
+                        "% from SMA50", format="%+.2f%%"\
+                    ),\
+                    "Vol Ratio": st.column_config.NumberColumn(\
+                        "Vol Ratio", format="%.2f\'d7"\
+                    ),\
+                    "Money Flow Score": st.column_config.ProgressColumn(\
+                        "Money Flow Score",\
+                        min_value=0,\
+                        max_value=100,\
+                        format="%d",\
+                        width="medium",\
+                    ),\
+                    "Price (p)": st.column_config.NumberColumn(\
+                        "Price (p)", format="%.2f"\
+                    ),\
+                    "20d Avg Vol": st.column_config.NumberColumn(\
+                        "20d Avg Vol", format="%,d"\
+                    ),\
+                \},\
+            )\
+\
+            # \uc0\u9472 \u9472  Export Signals to CSV \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+            st.markdown(\
+                '<div class="section-header">\uc0\u55357 \u56549  Export Signals</div>',\
+                unsafe_allow_html=True,\
+            )\
+            col_dl, _ = st.columns([1, 3])\
+            with col_dl:\
+                csv_buf = io.StringIO()\
+                filtered.to_csv(csv_buf, index=False)\
+                st.download_button(\
+                    label="\uc0\u11015 \u65039  Export to CSV",\
+                    data=csv_buf.getvalue(),\
+                    file_name=f"ftse_signals_\{datetime.date.today().isoformat()\}.csv",\
+                    mime="text/csv",\
+                    use_container_width=True,\
+                )\
+\
+            # \uc0\u9472 \u9472  Drill-Down Chart \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+            st.markdown(\
+                '<div class="section-header">\uc0\u55357 \u56522  View Detailed Chart</div>',\
+                unsafe_allow_html=True,\
+            )\
+\
+            chartable = filtered[~filtered["Signal"].isin(["No Data", "Error"])]\
+            if chartable.empty:\
+                st.info("No valid tickers available to chart.")\
+            else:\
+                ticker_labels = [\
+                    f"\{row['Company']\}  (\{row['Ticker']\})  \'97 \{row['Signal']\}  |  Score: \{row['Money Flow Score']\}"\
+                    for _, row in chartable.iterrows()\
+                ]\
+                selected_label = st.selectbox(\
+                    "Select a stock to view its chart:", ticker_labels\
+                )\
+\
+                if selected_label:\
+                    # Parse ticker from label\
+                    chart_ticker = selected_label.split("(")[1].split(")")[0].strip()\
+                    chart_company = selected_label.split("(")[0].strip()\
+\
+                    with st.spinner(f"Loading chart for **\{chart_ticker\}**..."):\
+                        chart_df = fetch_ohlcv(chart_ticker)\
+\
+                    if chart_df is not None and len(chart_df) >= 55:\
+                        chart_df = calculate_indicators(chart_df)\
+                        chart_df = detect_signals(chart_df)\
+                        st.plotly_chart(\
+                            build_chart(chart_df, chart_ticker, chart_company),\
+                            use_container_width=True,\
+                        )\
+\
+                        # Risk panel for the charted stock\
+                        chart_price = float(chart_df.iloc[-1]["Close"])\
+                        risk_data = calculate_position_size(chart_price, risk_amount, stop_loss_pct)\
+                        rows_html = "".join(\
+                            f'<div style="display:flex; justify-content:space-between; '\
+                            f'padding:4px 0; border-bottom:1px solid #2d3748;">'\
+                            f'<span style="color:#718096; font-size:0.88rem;">\{k\}</span>'\
+                            f'<span style="color:#e2e8f0; font-weight:600; font-size:0.88rem;">\{v\}</span>'\
+                            f"</div>"\
+                            for k, v in risk_data.items()\
+                        )\
+                        col_r, _ = st.columns([1, 1])\
+                        with col_r:\
+                            st.markdown(\
+                                f"""\
+                            <div class="risk-box">\
+                                <div style="color:#90cdf4; font-weight:700; margin-bottom:10px;">\
+                                    \uc0\u55357 \u56496  Position Sizing \'97 \{chart_company\}\
+                                </div>\
+                                \{rows_html\}\
+                            </div>\
+                            """,\
+                                unsafe_allow_html=True,\
+                            )\
+                    else:\
+                        st.warning(\
+                            f"Not enough data to chart **\{chart_ticker\}** "\
+                            f"(need at least 55 trading days)."\
+                        )\
+\
+\
+# \uc0\u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \u9472 \
+if __name__ == "__main__":\
+    main()\
+}
