@@ -997,8 +997,10 @@ def build_sector_heatmap(
         ],
         zmid=0,
         colorbar=dict(
-            title="Excess Return vs Index (%)",
-            titlefont=dict(color="#a0aec0"),
+            title=dict(
+                text="Excess Return vs Index (%)",
+                font=dict(color="#a0aec0"),
+            ),
             tickfont=dict(color="#a0aec0"),
         ),
         hovertemplate=(
