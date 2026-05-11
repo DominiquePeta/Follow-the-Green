@@ -527,29 +527,57 @@ def calculate_indicators(df: pd.DataFrame, ma_period: int = 50) -> pd.DataFrame:
 
 def detect_signals(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Bullish Accumulation  : Close > SMA_Active AND Vol_Ratio > 1.5 AND rising 5d vol
-    Bearish Distribution  : Close < SMA_Active AND Vol_Ratio > 1.5
-    Uses SMA_Active so Investor mode uses SMA150 and Trader mode uses SMA50.
+    Two tiers of signal strength:
+
+    Soft (1.5× volume):
+      Bullish Accumulation : Close > SMA_Active AND Vol_Ratio > 1.5 AND rising 5d vol
+      Bearish Distribution : Close < SMA_Active AND Vol_Ratio > 1.5
+
+    Heavy (3× volume) — likely institutional flow (Felix: true institutional = 5–10×,
+    3× is the conservative floor):
+      🟢🟢 Heavy Accumulation : same as bullish but Vol_Ratio > 3.0
+      🔴🔴 Heavy Distribution : same as bearish but Vol_Ratio > 3.0
+
+    Heavy overrides the soft signal string but Bullish/Bearish flags remain True
+    so the soft marker traces still render — heavy markers are drawn on top.
     """
     df = df.copy()
     df["Signal"]  = "Neutral"
     df["Bullish"] = False
     df["Bearish"] = False
+    df["Heavy"]   = False  # institutional-grade volume flag
 
-    bullish_mask = (
+    # ── Soft signals (unchanged 1.5× threshold) ──────────────────────────────
+    soft_bullish = (
         (df["Close"] > df["SMA_Active"])
         & (df["Vol_Ratio"] > 1.5)
         & (df["Vol_5d_Trend"] == 1.0)
     )
-    df.loc[bullish_mask, "Signal"]  = "Bullish Accumulation"
-    df.loc[bullish_mask, "Bullish"] = True
-
-    bearish_mask = (
+    soft_bearish = (
         (df["Close"] < df["SMA_Active"])
         & (df["Vol_Ratio"] > 1.5)
     )
-    df.loc[bearish_mask, "Signal"]  = "Bearish Distribution"
-    df.loc[bearish_mask, "Bearish"] = True
+
+    df.loc[soft_bullish, "Signal"]  = "Bullish Accumulation"
+    df.loc[soft_bullish, "Bullish"] = True
+    df.loc[soft_bearish, "Signal"]  = "Bearish Distribution"
+    df.loc[soft_bearish, "Bearish"] = True
+
+    # ── Heavy signals (3× threshold) — overrides signal string ───────────────
+    heavy_bullish = (
+        (df["Close"] > df["SMA_Active"])
+        & (df["Vol_Ratio"] > 3.0)
+        & (df["Vol_5d_Trend"] == 1.0)
+    )
+    heavy_bearish = (
+        (df["Close"] < df["SMA_Active"])
+        & (df["Vol_Ratio"] > 3.0)
+    )
+
+    df.loc[heavy_bullish, "Signal"] = "🟢🟢 Heavy Accumulation"
+    df.loc[heavy_bullish, "Heavy"]  = True
+    df.loc[heavy_bearish, "Signal"] = "🔴🔴 Heavy Distribution"
+    df.loc[heavy_bearish, "Heavy"]  = True
 
     return df
 
@@ -776,6 +804,46 @@ def build_chart(
                 bearish_days["Close"],
                 bearish_days["Vol_Ratio"].fillna(0),
                 bearish_days["Dist_MA_Pct"].fillna(0),
+            )),
+        ), row=1, col=1)
+
+    # ── Heavy markers — drawn after soft so they appear on top ───────────────
+    # Heavy column may be absent on older cached DataFrames; guard with .get
+    heavy_bull_days = df[df.get("Heavy", pd.Series(False, index=df.index)) & (df["Bullish"] == True)]
+    if not heavy_bull_days.empty:
+        fig.add_trace(go.Scatter(
+            x=heavy_bull_days.index, y=heavy_bull_days["Low"] * 0.968,
+            mode="markers", name="🟢🟢 Heavy Accumulation",
+            marker=dict(symbol="arrow-up", size=18, color="#00ff00",
+                        line=dict(color="#ffffff", width=1.5)),
+            hovertemplate=(
+                "<b>🟢🟢 Heavy Accumulation</b><br>Date: %{x|%d %b %Y}<br>"
+                f"Close: %{{customdata[0]:.2f}}<br>Vol Ratio: %{{customdata[1]:.2f}}×<br>"
+                f"vs {active_ma_label}: %{{customdata[2]:+.1f}}%<extra></extra>"
+            ),
+            customdata=list(zip(
+                heavy_bull_days["Close"],
+                heavy_bull_days["Vol_Ratio"].fillna(0),
+                heavy_bull_days["Dist_MA_Pct"].fillna(0),
+            )),
+        ), row=1, col=1)
+
+    heavy_bear_days = df[df.get("Heavy", pd.Series(False, index=df.index)) & (df["Bearish"] == True)]
+    if not heavy_bear_days.empty:
+        fig.add_trace(go.Scatter(
+            x=heavy_bear_days.index, y=heavy_bear_days["High"] * 1.032,
+            mode="markers", name="🔴🔴 Heavy Distribution",
+            marker=dict(symbol="arrow-down", size=18, color="#ff0000",
+                        line=dict(color="#ffffff", width=1.5)),
+            hovertemplate=(
+                "<b>🔴🔴 Heavy Distribution</b><br>Date: %{x|%d %b %Y}<br>"
+                f"Close: %{{customdata[0]:.2f}}<br>Vol Ratio: %{{customdata[1]:.2f}}×<br>"
+                f"vs {active_ma_label}: %{{customdata[2]:+.1f}}%<extra></extra>"
+            ),
+            customdata=list(zip(
+                heavy_bear_days["Close"],
+                heavy_bear_days["Vol_Ratio"].fillna(0),
+                heavy_bear_days["Dist_MA_Pct"].fillna(0),
             )),
         ), row=1, col=1)
 
@@ -1294,6 +1362,7 @@ def main():
         st.markdown("### 🔍 Filter & Sort")
         filter_mode = st.selectbox(
             "Filter", ["Show All", "🟢 Bullish Only", "🔴 Bearish Only",
+                       "🟢🟢 Heavy Accumulation Only", "🔴🔴 Heavy Distribution Only",
                        "⚠️ Warnings Only", "⚪ Neutral Only"]
         )
         sort_by = st.selectbox(
@@ -1368,7 +1437,32 @@ def main():
             pe_val = fetch_pe_ratio(ticker)
 
             # Signal banner
-            if signal == "Bullish Accumulation":
+            if signal == "🟢🟢 Heavy Accumulation":
+                st.markdown(f"""
+                <div class="banner-bullish" style="border-color:#00ff00;">
+                    <div style="font-size:1.2rem;font-weight:800;color:#00ff00;">
+                        🟢🟢 HEAVY ACCUMULATION — {ticker}
+                    </div>
+                    <div style="margin-top:6px;color:#9ae6b4;font-size:0.9rem;line-height:1.6;">
+                        Price <b>above {active_ma_label}</b> · Volume
+                        <b>{float(latest['Vol_Ratio']):.1f}× the 20-day average</b> ·
+                        Volume rising 5 days<br>
+                        <em>"Likely institutional — this is the real money. Follow the green hard."</em>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+            elif signal == "🔴🔴 Heavy Distribution":
+                st.markdown(f"""
+                <div class="banner-bearish" style="border-color:#ff0000;">
+                    <div style="font-size:1.2rem;font-weight:800;color:#ff0000;">
+                        🔴🔴 HEAVY DISTRIBUTION — {ticker}
+                    </div>
+                    <div style="margin-top:6px;color:#feb2b2;font-size:0.9rem;line-height:1.6;">
+                        Price <b>below {active_ma_label}</b> with extreme volume spike
+                        <b>{float(latest['Vol_Ratio']):.1f}×</b><br>
+                        <em>"Institutions are dumping. Do not buy the dip."</em>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+            elif signal == "Bullish Accumulation":
                 st.markdown(f"""
                 <div class="banner-bullish">
                     <div style="font-size:1.2rem;font-weight:800;color:#68d391;">
@@ -1428,7 +1522,7 @@ def main():
 
             vr = float(latest["Vol_Ratio"]) if pd.notna(latest["Vol_Ratio"]) else 0.0
             col3.metric("Vol Ratio", f"{vr:.2f}×",
-                        delta="🟢 SPIKE" if vr > 1.5 else "Normal",
+                        delta="🟢🟢 HEAVY" if vr > 3.0 else ("🟢 SPIKE" if vr > 1.5 else "Normal"),
                         delta_color="normal" if vr > 1.5 else "off")
 
             avg_vol = int(latest["Vol_MA20"]) if pd.notna(latest["Vol_MA20"]) else 0
@@ -1551,8 +1645,12 @@ def main():
                 return
 
             valid_df   = results_df[~results_df["Signal"].isin(["No Data", "Error"])]
-            bullish_n  = int((valid_df["Signal"] == "Bullish Accumulation").sum())
-            bearish_n  = int((valid_df["Signal"] == "Bearish Distribution").sum())
+            # Bullish count includes both soft and heavy accumulation
+            bullish_n  = int(valid_df["Signal"].isin(
+                ["Bullish Accumulation", "🟢🟢 Heavy Accumulation"]).sum())
+            # Bearish count includes both soft and heavy distribution
+            bearish_n  = int(valid_df["Signal"].isin(
+                ["Bearish Distribution", "🔴🔴 Heavy Distribution"]).sum())
             neutral_n  = int((valid_df["Signal"] == "Neutral").sum())
             warnings_n = int((valid_df["Warnings"] != "").sum())
 
@@ -1568,9 +1666,15 @@ def main():
             # Filters
             filtered = results_df.copy()
             if filter_mode == "🟢 Bullish Only":
-                filtered = filtered[filtered["Signal"] == "Bullish Accumulation"]
+                filtered = filtered[filtered["Signal"].isin(
+                    ["Bullish Accumulation", "🟢🟢 Heavy Accumulation"])]
             elif filter_mode == "🔴 Bearish Only":
-                filtered = filtered[filtered["Signal"] == "Bearish Distribution"]
+                filtered = filtered[filtered["Signal"].isin(
+                    ["Bearish Distribution", "🔴🔴 Heavy Distribution"])]
+            elif filter_mode == "🟢🟢 Heavy Accumulation Only":
+                filtered = filtered[filtered["Signal"] == "🟢🟢 Heavy Accumulation"]
+            elif filter_mode == "🔴🔴 Heavy Distribution Only":
+                filtered = filtered[filtered["Signal"] == "🔴🔴 Heavy Distribution"]
             elif filter_mode == "⚠️ Warnings Only":
                 filtered = filtered[filtered["Warnings"] != ""]
             elif filter_mode == "⚪ Neutral Only":
