@@ -480,15 +480,24 @@ def fetch_pe_ratio(ticker: str) -> float | None:
 # TECHNICAL INDICATORS
 # ─────────────────────────────────────────────────────────────────────────────
 
-def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
+def calculate_indicators(df: pd.DataFrame, ma_period: int = 50) -> pd.DataFrame:
     """
-    SMA50, Vol_MA20, Vol_Ratio, Vol_5d_Trend, Dist_SMA50_Pct.
-    Also computes rolling Money Flow Score history (for exit-signal detection).
+    SMA50, SMA150, SMA_Active, Vol_MA20, Vol_Ratio, Vol_5d_Trend,
+    Dist_SMA50_Pct (backwards-compat), Dist_MA_Pct (active MA).
+
+    ma_period=50  → Trader mode  (SMA_Active = SMA50)
+    ma_period=150 → Investor mode (SMA_Active = SMA150)
     """
     df = df.copy()
 
-    # ── SMA50: trend filter (Felix's primary rule) ────────────────────────────
+    # ── SMA50: always computed (needed for chart context and backwards compat) ─
     df["SMA50"] = df["Close"].rolling(window=50, min_periods=50).mean()
+
+    # ── SMA150: always computed (Investor mode primary trend filter) ──────────
+    df["SMA150"] = df["Close"].rolling(window=150, min_periods=150).mean()
+
+    # ── Active MA: whichever the selected mode is using ───────────────────────
+    df["SMA_Active"] = df["SMA150"] if ma_period == 150 else df["SMA50"]
 
     # ── 20-day average volume: baseline for spike detection ──────────────────
     df["Vol_MA20"] = df["Volume"].rolling(window=20, min_periods=20).mean()
@@ -503,8 +512,11 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
         .apply(lambda x: 1.0 if float(x.iloc[-1]) > float(x.iloc[0]) else 0.0, raw=False)
     )
 
-    # ── % distance from SMA50 ────────────────────────────────────────────────
+    # ── % distance from SMA50 (backwards-compat, kept for legacy references) ─
     df["Dist_SMA50_Pct"] = ((df["Close"] - df["SMA50"]) / df["SMA50"]) * 100
+
+    # ── % distance from active MA (used by all downstream logic) ─────────────
+    df["Dist_MA_Pct"] = ((df["Close"] - df["SMA_Active"]) / df["SMA_Active"]) * 100
 
     return df
 
@@ -515,8 +527,9 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def detect_signals(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Bullish Accumulation  : Close > SMA50 AND Vol_Ratio > 1.5 AND rising 5d vol
-    Bearish Distribution  : Close < SMA50 AND Vol_Ratio > 1.5
+    Bullish Accumulation  : Close > SMA_Active AND Vol_Ratio > 1.5 AND rising 5d vol
+    Bearish Distribution  : Close < SMA_Active AND Vol_Ratio > 1.5
+    Uses SMA_Active so Investor mode uses SMA150 and Trader mode uses SMA50.
     """
     df = df.copy()
     df["Signal"]  = "Neutral"
@@ -524,7 +537,7 @@ def detect_signals(df: pd.DataFrame) -> pd.DataFrame:
     df["Bearish"] = False
 
     bullish_mask = (
-        (df["Close"] > df["SMA50"])
+        (df["Close"] > df["SMA_Active"])
         & (df["Vol_Ratio"] > 1.5)
         & (df["Vol_5d_Trend"] == 1.0)
     )
@@ -532,7 +545,7 @@ def detect_signals(df: pd.DataFrame) -> pd.DataFrame:
     df.loc[bullish_mask, "Bullish"] = True
 
     bearish_mask = (
-        (df["Close"] < df["SMA50"])
+        (df["Close"] < df["SMA_Active"])
         & (df["Vol_Ratio"] > 1.5)
     )
     df.loc[bearish_mask, "Signal"]  = "Bearish Distribution"
@@ -554,7 +567,7 @@ def calculate_money_flow_score(row: pd.Series) -> int:
     """
     score = 0.0
 
-    dist = row.get("Dist_SMA50_Pct", 0.0)
+    dist = row.get("Dist_MA_Pct", row.get("Dist_SMA50_Pct", 0.0))
     if pd.notna(dist):
         score += max(0.0, min(50.0, 25.0 + dist * 2.5))
 
@@ -605,9 +618,9 @@ def detect_exit_warnings(df: pd.DataFrame) -> list[str]:
         if last3_dry and prior7_spike:
             warnings.append("⚠️ Volume Drying")
 
-    # 3. Overextended — price > 15% above SMA50
+    # 3. Overextended — price > 15% above active MA
     latest = df.iloc[-1]
-    dist   = latest.get("Dist_SMA50_Pct", 0.0)
+    dist   = latest.get("Dist_MA_Pct", latest.get("Dist_SMA50_Pct", 0.0))
     if pd.notna(dist) and dist > 15.0:
         warnings.append("⚠️ Extended")
 
@@ -676,7 +689,12 @@ def max_shares_str(price: float, risk: float, stop_pct: float, currency: str = "
 # CHART BUILDER  (unchanged from v1)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_chart(df: pd.DataFrame, ticker: str, company_name: str = "") -> go.Figure:
+def build_chart(
+    df: pd.DataFrame,
+    ticker: str,
+    company_name: str = "",
+    is_investor: bool = False,
+) -> go.Figure:
     title = f"{company_name} ({ticker})" if company_name else ticker
 
     fig = make_subplots(
@@ -695,11 +713,33 @@ def build_chart(df: pd.DataFrame, ticker: str, company_name: str = "") -> go.Fig
         whiskerwidth=0.4,
     ), row=1, col=1)
 
-    fig.add_trace(go.Scatter(
-        x=df.index, y=df["SMA50"], name="SMA 50",
-        line=dict(color="#2196f3", width=2.5), opacity=0.95,
-        hovertemplate="SMA50: %{y:.2f}<extra></extra>",
-    ), row=1, col=1)
+    # ── Dual MA lines — active = thick blue, inactive = thin dashed grey ──────
+    if is_investor:
+        # Investor mode: SMA150 is active (bold blue), SMA50 is inactive (grey)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["SMA150"], name="SMA 150 (Investor)",
+            line=dict(color="#2196f3", width=2.5), opacity=0.95,
+            hovertemplate="SMA150: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["SMA50"], name="SMA 50 (Trader)",
+            line=dict(color="#718096", width=1.5, dash="dot"), opacity=0.75,
+            hovertemplate="SMA50: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+    else:
+        # Trader mode: SMA50 is active (bold blue), SMA150 is inactive (grey)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["SMA50"], name="SMA 50 (Trader)",
+            line=dict(color="#2196f3", width=2.5), opacity=0.95,
+            hovertemplate="SMA50: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=df.index, y=df["SMA150"], name="SMA 150 (Investor)",
+            line=dict(color="#718096", width=1.5, dash="dot"), opacity=0.75,
+            hovertemplate="SMA150: %{y:.2f}<extra></extra>",
+        ), row=1, col=1)
+
+    active_ma_label = "SMA150" if is_investor else "SMA50"
 
     bullish_days = df[df["Bullish"] == True]
     if not bullish_days.empty:
@@ -710,13 +750,13 @@ def build_chart(df: pd.DataFrame, ticker: str, company_name: str = "") -> go.Fig
                         line=dict(color="#ffffff", width=1.5)),
             hovertemplate=(
                 "<b>🟢 Bullish Accumulation</b><br>Date: %{x|%d %b %Y}<br>"
-                "Close: %{customdata[0]:.2f}<br>Vol Ratio: %{customdata[1]:.2f}×<br>"
-                "vs SMA50: %{customdata[2]:+.1f}%<extra></extra>"
+                f"Close: %{{customdata[0]:.2f}}<br>Vol Ratio: %{{customdata[1]:.2f}}×<br>"
+                f"vs {active_ma_label}: %{{customdata[2]:+.1f}}%<extra></extra>"
             ),
             customdata=list(zip(
                 bullish_days["Close"],
                 bullish_days["Vol_Ratio"].fillna(0),
-                bullish_days["Dist_SMA50_Pct"].fillna(0),
+                bullish_days["Dist_MA_Pct"].fillna(0),
             )),
         ), row=1, col=1)
 
@@ -729,13 +769,13 @@ def build_chart(df: pd.DataFrame, ticker: str, company_name: str = "") -> go.Fig
                         line=dict(color="#ffffff", width=1.5)),
             hovertemplate=(
                 "<b>🔴 Bearish Distribution</b><br>Date: %{x|%d %b %Y}<br>"
-                "Close: %{customdata[0]:.2f}<br>Vol Ratio: %{customdata[1]:.2f}×<br>"
-                "vs SMA50: %{customdata[2]:+.1f}%<extra></extra>"
+                f"Close: %{{customdata[0]:.2f}}<br>Vol Ratio: %{{customdata[1]:.2f}}×<br>"
+                f"vs {active_ma_label}: %{{customdata[2]:+.1f}}%<extra></extra>"
             ),
             customdata=list(zip(
                 bearish_days["Close"],
                 bearish_days["Vol_Ratio"].fillna(0),
-                bearish_days["Dist_SMA50_Pct"].fillna(0),
+                bearish_days["Dist_MA_Pct"].fillna(0),
             )),
         ), row=1, col=1)
 
@@ -793,13 +833,17 @@ def scan_tickers(
     risk_gbp: float = 750.0,
     stop_pct: float = 0.10,
     currency: str = "£",
+    is_investor: bool = False,
 ) -> pd.DataFrame:
     """
     Scan all tickers. Returns one row per ticker with:
-      signal, MFS, vol ratio, % from SMA50,
+      signal, MFS, vol ratio, % from active MA,
       stop loss price, R:R ratio (always 2:1), max shares,
       backlog note flag, exit warnings,
       trailing P/E, sector avg P/E, and 💎 Value+Flow flag.
+
+    is_investor=True  → uses SMA150 as trend filter, requires 160 days min.
+    is_investor=False → uses SMA50  as trend filter, requires 55 days min.
     """
     # Combined sector lookup (FTSE + S&P)
     all_sectors = {**FTSE_SECTORS, **SP500_SECTORS}
@@ -821,23 +865,26 @@ def scan_tickers(
 
         df = fetch_ohlcv(ticker)
 
+        min_required = 160 if is_investor else 55
+        ma_period    = 150 if is_investor else 50
+
         base = {
             "Company": company, "Ticker": ticker,
             "Price": None, "Signal": "No Data",
             "Warnings": "", "Notes": "",
-            "% from SMA50": None, "20d Avg Vol": None,
+            "% from MA": None, "20d Avg Vol": None,
             "Vol Ratio": None, "Money Flow Score": None,
             "Stop Loss": "—", "R:R": "2:1", "Max Units": "—",
             "Trailing P/E": None, "Sector": all_sectors.get(ticker, "Other"),
             "Sector Avg P/E": None, "💎 Value+Flow": "",
         }
 
-        if df is None or len(df) < 55:
+        if df is None or len(df) < min_required:
             results.append(base)
             continue
 
         try:
-            df  = calculate_indicators(df)
+            df  = calculate_indicators(df, ma_period=ma_period)
             df  = detect_signals(df)
             latest = df.iloc[-1]
             mfs    = calculate_money_flow_score(latest)
@@ -846,7 +893,7 @@ def scan_tickers(
             pe     = fetch_pe_ratio(ticker)   # None if unavailable
 
             price = float(latest["Close"])
-            dist  = float(latest["Dist_SMA50_Pct"]) if pd.notna(latest["Dist_SMA50_Pct"]) else None
+            dist  = float(latest["Dist_MA_Pct"]) if pd.notna(latest["Dist_MA_Pct"]) else None
 
             results.append({
                 "Company":          company,
@@ -855,7 +902,7 @@ def scan_tickers(
                 "Signal":           str(latest["Signal"]),
                 "Warnings":         " | ".join(warns),
                 "Notes":            note,
-                "% from SMA50":     round(dist, 2) if dist is not None else None,
+                "% from MA":        round(dist, 2) if dist is not None else None,
                 "20d Avg Vol":      int(latest["Vol_MA20"]) if pd.notna(latest["Vol_MA20"]) else None,
                 "Vol Ratio":        round(float(latest["Vol_Ratio"]), 2) if pd.notna(latest["Vol_Ratio"]) else None,
                 "Money Flow Score": mfs,
@@ -1161,6 +1208,19 @@ def main():
         st.markdown("## ⚙️ Settings")
         st.markdown("---")
 
+        profile_mode = st.radio(
+            "Profile",
+            ["📊 Investor (SMA150)", "⚡ Trader (SMA50)"],
+            index=0,
+            help="Investors use the 150-day MA for safer, longer-term signals. "
+                 "Traders use the 50-day MA for faster signals on higher-volatility stocks."
+        )
+        is_investor      = profile_mode.startswith("📊")
+        active_ma_period = 150 if is_investor else 50
+        active_ma_label  = "SMA150" if is_investor else "SMA50"
+
+        st.markdown("---")
+
         scan_mode = st.radio(
             "Scan Mode",
             ["🔎 Single Stock", "🇬🇧 FTSE 100", "🇺🇸 S&P 500",
@@ -1238,7 +1298,7 @@ def main():
         )
         sort_by = st.selectbox(
             "Sort By",
-            ["Money Flow Score ↓", "Volume Ratio ↓", "% above SMA50 ↓", "Company A→Z"]
+            ["Money Flow Score ↓", "Volume Ratio ↓", f"% above {active_ma_label} ↓", "Company A→Z"]
         )
 
         st.markdown("---")
@@ -1248,11 +1308,13 @@ def main():
         stop_loss_pct = st.slider("Stop loss %", min_value=2, max_value=25, value=10) / 100.0
 
         st.markdown("---")
-        st.markdown("""
+        _ma_lbl   = "SMA150" if is_investor else "SMA50"
+        _mode_lbl = "Investor" if is_investor else "Trader"
+        st.markdown(f"""
         <div style="color:#4a5568;font-size:0.78rem;line-height:1.6;">
-        <b style="color:#718096;">Felix's 5 Rules:</b><br>
-        1. Price above SMA50<br>
-        2. Volume spike &gt;1.5× avg<br>
+        <b style="color:#718096;">Felix's Rules ({_mode_lbl} Mode):</b><br>
+        1. Price above {_ma_lbl}<br>
+        2. Volume spike &gt;1.5× avg (or &gt;3× = Heavy)<br>
         3. Rising 5-day volume trend<br>
         4. Risk ≤1% per trade<br>
         5. Target 2:1 reward-to-risk<br><br>
@@ -1291,11 +1353,12 @@ def main():
             if df is None or df.empty:
                 st.error(f"❌ No data for **{ticker}**. Check the symbol and try again.")
                 return
-            if len(df) < 55:
-                st.warning(f"⚠️ Only {len(df)} days of data for {ticker} — need ≥55.")
+            _min_req = 160 if is_investor else 55
+            if len(df) < _min_req:
+                st.warning(f"⚠️ Only {len(df)} days of data for {ticker} — need ≥{_min_req} in {active_ma_label} mode.")
                 return
 
-            df     = calculate_indicators(df)
+            df     = calculate_indicators(df, ma_period=active_ma_period)
             df     = detect_signals(df)
             latest = df.iloc[-1]
             prev   = df.iloc[-2] if len(df) > 1 else latest
@@ -1312,7 +1375,7 @@ def main():
                         🟢 BULLISH ACCUMULATION — {ticker}
                     </div>
                     <div style="margin-top:6px;color:#9ae6b4;font-size:0.9rem;line-height:1.6;">
-                        Price <b>above SMA50</b> · Volume
+                        Price <b>above {active_ma_label}</b> · Volume
                         <b>{float(latest['Vol_Ratio']):.1f}× the 20-day average</b> ·
                         Volume rising 5 days<br>
                         <em>"Institutions are loading up. Follow the green."</em>
@@ -1325,7 +1388,7 @@ def main():
                         🔴 BEARISH DISTRIBUTION — {ticker}
                     </div>
                     <div style="margin-top:6px;color:#feb2b2;font-size:0.9rem;line-height:1.6;">
-                        Price <b>below SMA50</b> with volume spike
+                        Price <b>below {active_ma_label}</b> with volume spike
                         <b>{float(latest['Vol_Ratio']):.1f}×</b><br>
                         <em>"Smart money is exiting. Avoid new longs."</em>
                     </div>
@@ -1358,8 +1421,8 @@ def main():
                         delta=f"{day_chg:+.2f}%",
                         delta_color="normal" if day_chg >= 0 else "inverse")
 
-            dist = float(latest["Dist_SMA50_Pct"]) if pd.notna(latest["Dist_SMA50_Pct"]) else 0.0
-            col2.metric("vs SMA50", f"{dist:+.1f}%",
+            dist = float(latest["Dist_MA_Pct"]) if pd.notna(latest["Dist_MA_Pct"]) else 0.0
+            col2.metric(f"vs {active_ma_label}", f"{dist:+.1f}%",
                         delta="Above trend" if dist > 0 else "Below trend",
                         delta_color="normal" if dist > 0 else "inverse")
 
@@ -1376,7 +1439,7 @@ def main():
                         delta_color="normal" if mfs >= 70 else ("off" if mfs >= 40 else "inverse"))
 
             # Chart
-            fig = build_chart(df, ticker, company_name)
+            fig = build_chart(df, ticker, company_name, is_investor=is_investor)
             st.plotly_chart(fig, use_container_width=True)
 
             # Summary + Risk side by side
@@ -1390,15 +1453,16 @@ def main():
                 this_sector     = all_sectors_map.get(ticker, "Other")
                 pe_display      = f"{pe_val:.1f}" if pe_val is not None else "N/A"
 
+                _active_sma_val = float(latest["SMA_Active"]) if pd.notna(latest["SMA_Active"]) else None
                 summary = pd.DataFrame({
-                    "Metric": ["Signal", "Close", "SMA50", "% from SMA50",
+                    "Metric": ["Signal", "Close", active_ma_label, f"% from {active_ma_label}",
                                "Volume", "20d Avg Vol", "Vol Ratio", "Vol 5d Trend",
                                "Money Flow Score", "Trailing P/E", "Sector",
                                "Exit Warnings"],
                     "Value": [
                         signal,
                         f"{float(latest['Close']):.2f}{'p' if currency == '£' else '$'}",
-                        f"{float(latest['SMA50']):.2f}" if pd.notna(latest["SMA50"]) else "N/A",
+                        f"{_active_sma_val:.2f}" if _active_sma_val is not None else "N/A",
                         f"{dist:+.2f}%",
                         f"{int(latest['Volume']):,}",
                         f"{avg_vol:,}",
@@ -1439,26 +1503,27 @@ def main():
             # Signal history
             st.markdown('<div class="section-header">📋 Signal History (Last 60 Days)</div>',
                         unsafe_allow_html=True)
+            _pct_col = f"% from {active_ma_label}"
             hist = (df[df["Signal"] != "Neutral"]
-                    .tail(60)[["Close", "Volume", "Vol_Ratio", "Dist_SMA50_Pct", "Signal"]]
+                    .tail(60)[["Close", "Volume", "Vol_Ratio", "Dist_MA_Pct", "Signal"]]
                     .copy())
             if hist.empty:
                 st.info("No bullish/bearish signals in the last 60 days.")
             else:
                 hist.index = pd.to_datetime(hist.index).strftime("%d %b %Y")
-                hist.columns = ["Close", "Volume", "Vol Ratio", "% from SMA50", "Signal"]
+                hist.columns = ["Close", "Volume", "Vol Ratio", _pct_col, "Signal"]
                 hist = hist.round(2).iloc[::-1]
                 st.dataframe(hist, use_container_width=True,
                              column_config={
                                  "Vol Ratio": st.column_config.NumberColumn(format="%.2f×"),
-                                 "% from SMA50": st.column_config.NumberColumn(format="%+.2f%%"),
+                                 _pct_col: st.column_config.NumberColumn(format="%+.2f%%"),
                                  "Volume": st.column_config.NumberColumn(format="%,d"),
                              })
 
             # Export
             st.markdown('<div class="section-header">📥 Export</div>', unsafe_allow_html=True)
-            exp = df[["Open", "High", "Low", "Close", "Volume", "SMA50",
-                      "Vol_MA20", "Vol_Ratio", "Dist_SMA50_Pct", "Signal"]].copy()
+            exp = df[["Open", "High", "Low", "Close", "Volume", "SMA50", "SMA150",
+                      "Vol_MA20", "Vol_Ratio", "Dist_MA_Pct", "Signal"]].copy()
             exp.index.name = "Date"
             buf = io.StringIO(); exp.to_csv(buf)
             st.download_button("⬇️ Export to CSV", buf.getvalue(),
@@ -1475,7 +1540,11 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            results_df = scan_tickers(selected_tickers, risk_amount, stop_loss_pct, currency)
+            results_df = scan_tickers(selected_tickers, risk_amount, stop_loss_pct, currency,
+                                      is_investor=is_investor)
+            # Rename internal "% from MA" column to the display label for this mode
+            if "% from MA" in results_df.columns:
+                results_df = results_df.rename(columns={"% from MA": f"% from {active_ma_label}"})
 
             if results_df.empty:
                 st.error("No results returned.")
@@ -1512,8 +1581,8 @@ def main():
                 filtered = filtered.sort_values("Money Flow Score", ascending=False, na_position="last")
             elif sort_by == "Volume Ratio ↓":
                 filtered = filtered.sort_values("Vol Ratio", ascending=False, na_position="last")
-            elif sort_by == "% above SMA50 ↓":
-                filtered = filtered.sort_values("% from SMA50", ascending=False, na_position="last")
+            elif sort_by == f"% above {active_ma_label} ↓":
+                filtered = filtered.sort_values(f"% from {active_ma_label}", ascending=False, na_position="last")
             elif sort_by == "Company A→Z":
                 filtered = filtered.sort_values("Company")
 
@@ -1521,10 +1590,11 @@ def main():
 
             if not filtered.empty:
                 # Column order for display
+                _ma_col = f"% from {active_ma_label}"
                 display_cols = [
                     "Company", "Ticker", "Price", "Signal", "Warnings",
                     "💎 Value+Flow", "Money Flow Score", "Vol Ratio",
-                    "% from SMA50", "Trailing P/E", "Sector Avg P/E",
+                    _ma_col, "Trailing P/E", "Sector Avg P/E",
                     "Stop Loss", "R:R", "Max Units", "20d Avg Vol", "Notes",
                 ]
                 show_df = filtered[[c for c in display_cols if c in filtered.columns]].copy()
@@ -1539,7 +1609,7 @@ def main():
                         "Warnings": st.column_config.TextColumn("Warnings", width="medium"),
                         "💎 Value+Flow": st.column_config.TextColumn("💎 Value+Flow", width="medium"),
                         "Notes": st.column_config.TextColumn("📋 Notes", width="large"),
-                        "% from SMA50": st.column_config.NumberColumn(format="%+.2f%%"),
+                        _ma_col: st.column_config.NumberColumn(format="%+.2f%%"),
                         "Vol Ratio": st.column_config.NumberColumn(format="%.2f×"),
                         "Money Flow Score": st.column_config.ProgressColumn(
                             "MF Score", min_value=0, max_value=100, format="%d", width="medium"
@@ -1579,11 +1649,15 @@ def main():
                         chart_company = sel_label.split("(")[0].strip()
                         with st.spinner(f"Loading {chart_ticker}…"):
                             cdf = fetch_ohlcv(chart_ticker)
-                        if cdf is not None and len(cdf) >= 55:
-                            cdf = calculate_indicators(cdf)
+                        _chart_min = 160 if is_investor else 55
+                        if cdf is not None and len(cdf) >= _chart_min:
+                            cdf = calculate_indicators(cdf, ma_period=active_ma_period)
                             cdf = detect_signals(cdf)
-                            st.plotly_chart(build_chart(cdf, chart_ticker, chart_company),
-                                            use_container_width=True)
+                            st.plotly_chart(
+                                build_chart(cdf, chart_ticker, chart_company,
+                                            is_investor=is_investor),
+                                use_container_width=True,
+                            )
                             # Risk for charted stock
                             ccy = "£" if chart_ticker.endswith(".L") else "$"
                             risk_data = calculate_position_size(
