@@ -938,7 +938,7 @@ def scan_tickers(
 
         base = {
             "Company": company, "Ticker": ticker,
-            "Price": None, "Signal": "No Data",
+            "Price": None, "Signal": "No Data", "Buy Eligible": "🚫",
             "Warnings": "", "Notes": "",
             "% from MA": None, "20d Avg Vol": None,
             "Vol Ratio": None, "Money Flow Score": None,
@@ -960,14 +960,16 @@ def scan_tickers(
             note   = "📋 " + BACKLOG_NOTES[ticker] if ticker in BACKLOG_NOTES else ""
             pe     = fetch_pe_ratio(ticker)   # None if unavailable
 
-            price = float(latest["Close"])
-            dist  = float(latest["Dist_MA_Pct"]) if pd.notna(latest["Dist_MA_Pct"]) else None
+            price        = float(latest["Close"])
+            dist         = float(latest["Dist_MA_Pct"]) if pd.notna(latest["Dist_MA_Pct"]) else None
+            buy_eligible = bool(price > float(latest["SMA_Active"])) if pd.notna(latest["SMA_Active"]) else False
 
             results.append({
                 "Company":          company,
                 "Ticker":           ticker,
                 "Price":            round(price, 2),
                 "Signal":           str(latest["Signal"]),
+                "Buy Eligible":     "✅" if buy_eligible else "🚫",
                 "Warnings":         " | ".join(warns),
                 "Notes":            note,
                 "% from MA":        round(dist, 2) if dist is not None else None,
@@ -1363,6 +1365,7 @@ def main():
         filter_mode = st.selectbox(
             "Filter", ["Show All", "🟢 Bullish Only", "🔴 Bearish Only",
                        "🟢🟢 Heavy Accumulation Only", "🔴🔴 Heavy Distribution Only",
+                       "✅ Buy Eligible Only", "🚫 Never Buy (below MA)",
                        "⚠️ Warnings Only", "⚪ Neutral Only"]
         )
         sort_by = st.selectbox(
@@ -1675,6 +1678,10 @@ def main():
                 filtered = filtered[filtered["Signal"] == "🟢🟢 Heavy Accumulation"]
             elif filter_mode == "🔴🔴 Heavy Distribution Only":
                 filtered = filtered[filtered["Signal"] == "🔴🔴 Heavy Distribution"]
+            elif filter_mode == "✅ Buy Eligible Only":
+                filtered = filtered[filtered["Buy Eligible"] == "✅"]
+            elif filter_mode == "🚫 Never Buy (below MA)":
+                filtered = filtered[filtered["Buy Eligible"] == "🚫"]
             elif filter_mode == "⚠️ Warnings Only":
                 filtered = filtered[filtered["Warnings"] != ""]
             elif filter_mode == "⚪ Neutral Only":
@@ -1696,7 +1703,7 @@ def main():
                 # Column order for display
                 _ma_col = f"% from {active_ma_label}"
                 display_cols = [
-                    "Company", "Ticker", "Price", "Signal", "Warnings",
+                    "Company", "Ticker", "Price", "Signal", "Buy Eligible", "Warnings",
                     "💎 Value+Flow", "Money Flow Score", "Vol Ratio",
                     _ma_col, "Trailing P/E", "Sector Avg P/E",
                     "Stop Loss", "R:R", "Max Units", "20d Avg Vol", "Notes",
@@ -1710,6 +1717,7 @@ def main():
                     hide_index=True,
                     column_config={
                         "Signal": st.column_config.TextColumn("Signal", width="medium"),
+                        "Buy Eligible": st.column_config.TextColumn("Buy?", width="small"),
                         "Warnings": st.column_config.TextColumn("Warnings", width="medium"),
                         "💎 Value+Flow": st.column_config.TextColumn("💎 Value+Flow", width="medium"),
                         "Notes": st.column_config.TextColumn("📋 Notes", width="large"),
