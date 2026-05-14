@@ -27,6 +27,8 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import datetime
 import io
+import requests
+import xml.etree.ElementTree as ET
 
 # ── Page Config ────────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -477,6 +479,267 @@ def fetch_pe_ratio(ticker: str) -> float | None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# INSTITUTIONAL DATA — INTEGRATION 1: SEC EDGAR FORM 4 INSIDER BUYS
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=86400 * 7, show_spinner=False)
+def _fetch_edgar_cik_map() -> dict[str, str]:
+    """
+    Load the SEC EDGAR ticker→CIK mapping from the public company_tickers.json.
+    Cached for 7 days — the map changes very infrequently.
+
+    Returns:
+        dict of {TICKER_UPPER: zero-padded-10-digit-CIK-string}
+    Returns an empty dict on any failure.
+    """
+    try:
+        url = "https://www.sec.gov/files/company_tickers.json"
+        headers = {"User-Agent": "Follow-the-Green Research research@example.com"}
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        raw = resp.json()
+        return {
+            entry["ticker"].upper(): str(entry["cik_str"]).zfill(10)
+            for entry in raw.values()
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_insider_buys(ticker: str, days: int = 90) -> int | None:
+    """
+    Count C-suite / Director Form 4 purchase transactions (transaction code "P")
+    for a US ticker over the last *days* days via SEC EDGAR (free, no API key).
+
+    EDGAR requires a descriptive User-Agent header identifying the application
+    and a contact address per their fair-access policy.
+
+    Caps at the 20 most recent Form 4 filings to keep request counts manageable.
+    Each filing's primary XML document is fetched and parsed for:
+      - reportingOwnerRelationship: isDirector == "1" OR isOfficer == "1"
+      - transactionCode: "P" (open-market or private purchase)
+
+    Returns:
+        int  — count of qualifying insider purchase transactions found (may be 0)
+        None — if the ticker has no EDGAR CIK, or any request/parse failure
+
+    US tickers only — do not call for FTSE tickers with a .L suffix.
+    """
+    _HEADERS = {
+        "User-Agent": "Follow-the-Green Research research@example.com",
+        "Accept-Encoding": "gzip, deflate",
+    }
+    try:
+        cik_map = _fetch_edgar_cik_map()
+        if not cik_map:
+            return None
+        cik = cik_map.get(ticker.upper().replace(".L", ""))
+        if cik is None:
+            return None
+
+        # ── Fetch the company's submissions metadata ──────────────────────────
+        sub_url  = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        sub_resp = requests.get(sub_url, headers=_HEADERS, timeout=12)
+        sub_resp.raise_for_status()
+        sub_data = sub_resp.json()
+
+        filings   = sub_data.get("filings", {}).get("recent", {})
+        forms     = filings.get("form", [])
+        dates     = filings.get("filingDate", [])
+        acc_nos   = filings.get("accessionNumber", [])
+        pri_docs  = filings.get("primaryDocument", [])
+
+        cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+
+        # ── Collect Form 4 filings within the date window (cap at 20) ─────────
+        qualifying: list[tuple[str, str]] = []
+        for form, date, acc, doc in zip(forms, dates, acc_nos, pri_docs):
+            if form == "4" and date >= cutoff:
+                qualifying.append((acc, doc))
+            if len(qualifying) >= 20:
+                break
+
+        if not qualifying:
+            return 0
+
+        purchase_count = 0
+        for acc_no, primary_doc in qualifying:
+            acc_clean = acc_no.replace("-", "")
+            xml_url = (
+                f"https://www.sec.gov/Archives/edgar/data/{int(cik)}"
+                f"/{acc_clean}/{primary_doc}"
+            )
+            try:
+                xml_resp = requests.get(xml_url, headers=_HEADERS, timeout=8)
+                xml_resp.raise_for_status()
+                root = ET.fromstring(xml_resp.content)
+            except Exception:
+                continue  # skip inaccessible or malformed filings
+
+            # Strip XML namespace prefix so tag names match regardless of version
+            for elem in root.iter():
+                if "}" in elem.tag:
+                    elem.tag = elem.tag.split("}", 1)[1]
+
+            # Only count transactions from Directors or Officers
+            is_insider = any(
+                rel.findtext("isDirector") == "1" or rel.findtext("isOfficer") == "1"
+                for rel in root.iter("reportingOwnerRelationship")
+            )
+            if not is_insider:
+                continue
+
+            # Count non-derivative purchases (code "P")
+            for tx in root.iter("nonDerivativeTransaction"):
+                if (tx.findtext(".//transactionCode") or "").strip().upper() == "P":
+                    purchase_count += 1
+
+            # Count derivative purchases (e.g. buying call options outright)
+            for tx in root.iter("derivativeTransaction"):
+                if (tx.findtext(".//transactionCode") or "").strip().upper() == "P":
+                    purchase_count += 1
+
+        return purchase_count
+
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTITUTIONAL DATA — INTEGRATION 2: FMP 13F (STUB — REQUIRES API KEY)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def fetch_13f_change(ticker: str) -> str | None:
+    """
+    STUB — FMP's institutional-holder endpoint requires a registered API key.
+
+    The endpoint is: GET /api/v3/institutional-holder/{symbol}?apikey={key}
+    FMP's free tier (250 requests/day) requires sign-up at
+    https://financialmodelingprep.com/developer/docs/
+
+    To activate this integration:
+      1. Register and obtain a free API key from FMP.
+      2. Store the key as the environment variable FMP_API_KEY or in
+         Streamlit secrets as [fmp] api_key = "...".
+      3. Replace this stub with the live implementation documented in
+         institutional-data-notes.md.
+
+    Returns None unconditionally — the "13F Δ" column will show "N/A".
+    US tickers only.
+    """
+    return None  # stub — see institutional-data-notes.md
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INSTITUTIONAL DATA — INTEGRATION 3: FCA SHORT POSITION REGISTER
+# ─────────────────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=43200, show_spinner=False)   # 12-hour cache
+def fetch_fca_shorts() -> dict[str, float]:
+    """
+    Download the FCA daily short position register (free public XLSX, no API key).
+    Source: https://www.fca.org.uk/publication/data/short-positions-daily-update.xlsx
+
+    The register contains all net short positions ≥ 0.5 % of issued share capital
+    that position holders are required to disclose under UK Short Selling Regulation.
+    Multiple holders may be short the same company — their positions are summed.
+
+    Returns:
+        dict of {UPPERCASE_ISSUER_NAME: total_net_short_pct}
+        Returns an empty dict on any failure (caller must handle gracefully).
+
+    UK tickers only — do not use for S&P 500 / ETF tickers.
+    """
+    url = "https://www.fca.org.uk/publication/data/short-positions-daily-update.xlsx"
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        raw_bytes = io.BytesIO(resp.content)
+
+        # The FCA XLSX has 2–4 metadata rows before the column headers.
+        # Scan for the row that contains "Issuer" to find the true header row.
+        df_probe = pd.read_excel(raw_bytes, header=None, engine="openpyxl")
+        header_row: int | None = None
+        for idx, row in df_probe.iterrows():
+            row_lower = [str(v).strip().lower() for v in row.values]
+            if any("issuer" in v for v in row_lower):
+                header_row = int(idx)
+                break
+
+        if header_row is None:
+            return {}
+
+        df = pd.read_excel(
+            io.BytesIO(resp.content), header=header_row, engine="openpyxl"
+        )
+        df.columns = [str(c).strip() for c in df.columns]
+
+        # Locate the issuer-name and net-short-position columns by keyword
+        issuer_col: str | None = next(
+            (c for c in df.columns
+             if "issuer" in c.lower() and "name" in c.lower()), None
+        )
+        short_col: str | None = next(
+            (c for c in df.columns
+             if "net short" in c.lower() or ("position" in c.lower() and "%" in c)), None
+        )
+        if issuer_col is None or short_col is None:
+            return {}
+
+        df = df[[issuer_col, short_col]].dropna(subset=[issuer_col])
+        df[short_col] = pd.to_numeric(df[short_col], errors="coerce")
+        df = df.dropna(subset=[short_col])
+
+        # Sum all position holders' shorts per issuer
+        result: dict[str, float] = {}
+        for issuer, grp in df.groupby(issuer_col):
+            key = str(issuer).strip().upper()
+            result[key] = round(float(grp[short_col].sum()), 2)
+
+        return result
+
+    except Exception:
+        return {}
+
+
+def _match_fca_short(company_name: str, fca_map: dict[str, float]) -> float | None:
+    """
+    Match a FTSE company name (from the ticker dict) against the FCA short
+    register using case-insensitive substring matching.
+
+    Match priority:
+      1. Exact upper-case match
+      2. Company name contained within FCA issuer name
+      3. FCA issuer name contained within company name
+      4. First significant word match (≥ 4 characters, unique result only)
+
+    Returns the summed net short % or None if no confident match is found.
+    """
+    name_upper = company_name.strip().upper()
+    if not name_upper:
+        return None
+
+    # 1 — exact match
+    if name_upper in fca_map:
+        return fca_map[name_upper]
+
+    # 2 & 3 — substring match
+    for fca_name, pct in fca_map.items():
+        if name_upper in fca_name or fca_name in name_upper:
+            return pct
+
+    # 4 — first significant word (≥ 4 chars), only when result is unambiguous
+    words = [w for w in name_upper.split() if len(w) >= 4]
+    if words:
+        candidates = [(k, v) for k, v in fca_map.items() if k.startswith(words[0])]
+        if len(candidates) == 1:
+            return candidates[0][1]
+
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TECHNICAL INDICATORS
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -902,19 +1165,29 @@ def scan_tickers(
     stop_pct: float = 0.10,
     currency: str = "£",
     is_investor: bool = False,
+    use_insider_data: bool = False,
+    use_13f_data: bool = False,
+    use_fca_shorts: bool = False,
 ) -> pd.DataFrame:
     """
     Scan all tickers. Returns one row per ticker with:
       signal, MFS, vol ratio, % from active MA,
       stop loss price, R:R ratio (always 2:1), max shares,
       backlog note flag, exit warnings,
-      trailing P/E, sector avg P/E, and 💎 Value+Flow flag.
+      trailing P/E, sector avg P/E, 💎 Value+Flow flag,
+      and — when the corresponding toggle is enabled — institutional data columns.
 
-    is_investor=True  → uses SMA150 as trend filter, requires 160 days min.
-    is_investor=False → uses SMA50  as trend filter, requires 55 days min.
+    is_investor=True      → uses SMA150 as trend filter, requires 160 days min.
+    is_investor=False     → uses SMA50  as trend filter, requires 55 days min.
+    use_insider_data=True → fetches SEC Form 4 insider buys (US tickers only).
+    use_13f_data=True     → currently stubbed; shows N/A (FMP key required).
+    use_fca_shorts=True   → fetches FCA short position register (UK tickers only).
     """
     # Combined sector lookup (FTSE + S&P)
     all_sectors = {**FTSE_SECTORS, **SP500_SECTORS}
+
+    # ── Pre-fetch FCA shorts once for the whole scan (12-hour cache) ──────────
+    fca_short_map: dict[str, float] = fetch_fca_shorts() if use_fca_shorts else {}
 
     results = []
     tickers = list(ticker_dict.items())
@@ -945,6 +1218,7 @@ def scan_tickers(
             "Stop Loss": "—", "R:R": "2:1", "Max Units": "—",
             "Trailing P/E": None, "Sector": all_sectors.get(ticker, "Other"),
             "Sector Avg P/E": None, "💎 Value+Flow": "",
+            "Insider Buys (90d)": None, "13F Δ": None, "Short %": None,
         }
 
         if df is None or len(df) < min_required:
@@ -963,6 +1237,27 @@ def scan_tickers(
             price        = float(latest["Close"])
             dist         = float(latest["Dist_MA_Pct"]) if pd.notna(latest["Dist_MA_Pct"]) else None
             buy_eligible = bool(price > float(latest["SMA_Active"])) if pd.notna(latest["SMA_Active"]) else False
+
+            # ── Institutional data (additive, gated by sidebar toggles) ──────
+            is_us_ticker = not ticker.upper().endswith(".L")
+            is_uk_ticker = ticker.upper().endswith(".L")
+
+            insider_buys: int | None = None
+            if use_insider_data and is_us_ticker:
+                insider_buys = fetch_insider_buys(ticker)
+
+            _13f_val: str | None = None
+            if use_13f_data and is_us_ticker:
+                _13f_val = fetch_13f_change(ticker)   # always None (stub)
+
+            short_pct_raw: float | None = None
+            if use_fca_shorts and is_uk_ticker and fca_short_map:
+                short_pct_raw = _match_fca_short(company, fca_short_map)
+            # Format as "3.25% 🩸" when ≥ 3 %, otherwise "1.20%", else None
+            short_pct_str: str | None = None
+            if short_pct_raw is not None:
+                flag = " 🩸" if short_pct_raw >= 3.0 else ""
+                short_pct_str = f"{short_pct_raw:.2f}%{flag}"
 
             results.append({
                 "Company":          company,
@@ -983,6 +1278,9 @@ def scan_tickers(
                 "Sector":           all_sectors.get(ticker, "Other"),
                 "Sector Avg P/E":   None,   # filled in post-loop
                 "💎 Value+Flow":    "",      # filled in post-loop
+                "Insider Buys (90d)": insider_buys,
+                "13F Δ":             _13f_val,
+                "Short %":           short_pct_str,
             })
 
         except Exception:
@@ -1029,6 +1327,21 @@ def scan_tickers(
 
         df_out["Sector Avg P/E"] = df_out.apply(_sector_avg, axis=1)
         df_out["💎 Value+Flow"]  = df_out.apply(_value_flow_flag, axis=1)
+
+        # ── Triple Confluence upgrade: 💎 Value+Flow + confirmed insider buying ─
+        # Requires: MFS > 60 AND P/E < sector avg (already in 💎) AND
+        # at least one director/officer Form 4 purchase in the last 90 days.
+        if use_insider_data and "Insider Buys (90d)" in df_out.columns:
+            def _triple_confluence(row: pd.Series) -> str:
+                if (
+                    row.get("💎 Value+Flow") == "💎 Value+Flow"
+                    and isinstance(row.get("Insider Buys (90d)"), int)
+                    and row["Insider Buys (90d)"] > 0
+                ):
+                    return "💎💎 Triple Confluence"
+                return row.get("💎 Value+Flow", "")
+
+            df_out["💎 Value+Flow"] = df_out.apply(_triple_confluence, axis=1)
 
     return df_out
 
@@ -1394,6 +1707,44 @@ def main():
         </div>
         """, unsafe_allow_html=True)
 
+        st.markdown("---")
+        st.markdown("### 🔬 Institutional Data (Beta)")
+        st.caption(
+            "Validate volume signals with live institutional data. "
+            "All sources are free public endpoints — no paid API required "
+            "except FMP 13F (see institutional-data-notes.md)."
+        )
+        use_insider_data = st.toggle(
+            "🏛️ SEC Form 4 Insider Buys (US only)",
+            value=False,
+            help=(
+                "Fetches director/officer purchase transactions from SEC EDGAR "
+                "over the last 90 days. Free, no API key. Adds ~1–3 s per US "
+                "ticker. Upgrades 💎 Value+Flow → 💎💎 Triple Confluence when "
+                "insider buys are confirmed."
+            ),
+        )
+        use_13f_data = st.toggle(
+            "📊 FMP 13F Net Position Δ (US only)",
+            value=False,
+            disabled=True,
+            help=(
+                "Currently disabled — FMP's 13F endpoint requires a free-tier "
+                "API key (registration at financialmodelingprep.com). "
+                "See institutional-data-notes.md for the activation path."
+            ),
+        )
+        use_fca_shorts = st.toggle(
+            "🩸 FCA Short Position Register (UK only)",
+            value=False,
+            help=(
+                "Downloads the FCA's daily short position register XLSX "
+                "(free public download, no API key). Flags tickers with "
+                "disclosed shorts ≥ 3 % of issued capital with 🩸. "
+                "One download per 12 hours; matched across all FTSE tickers."
+            ),
+        )
+
     # ── Guard ──────────────────────────────────────────────────────────────────
     if scan_mode != "🌍 Cross-Market" and not selected_tickers:
         st.info("👈 Select tickers in the sidebar to begin.")
@@ -1637,8 +1988,13 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            results_df = scan_tickers(selected_tickers, risk_amount, stop_loss_pct, currency,
-                                      is_investor=is_investor)
+            results_df = scan_tickers(
+                selected_tickers, risk_amount, stop_loss_pct, currency,
+                is_investor=is_investor,
+                use_insider_data=use_insider_data,
+                use_13f_data=use_13f_data,
+                use_fca_shorts=use_fca_shorts,
+            )
             # Rename internal "% from MA" column to the display label for this mode
             if "% from MA" in results_df.columns:
                 results_df = results_df.rename(columns={"% from MA": f"% from {active_ma_label}"})
@@ -1705,7 +2061,8 @@ def main():
                 display_cols = [
                     "Company", "Ticker", "Price", "Signal", "Buy Eligible", "Warnings",
                     "💎 Value+Flow", "Money Flow Score", "Vol Ratio",
-                    _ma_col, "Trailing P/E", "Sector Avg P/E",
+                    _ma_col, "Insider Buys (90d)", "13F Δ", "Short %",
+                    "Trailing P/E", "Sector Avg P/E",
                     "Stop Loss", "R:R", "Max Units", "20d Avg Vol", "Notes",
                 ]
                 show_df = filtered[[c for c in display_cols if c in filtered.columns]].copy()
@@ -1734,6 +2091,11 @@ def main():
                         "Sector Avg P/E": st.column_config.NumberColumn(
                             "Sector Avg P/E", format="%.1f"
                         ),
+                        "Insider Buys (90d)": st.column_config.NumberColumn(
+                            "Insider Buys", format="%d", width="small"
+                        ),
+                        "13F Δ": st.column_config.TextColumn("13F Δ", width="small"),
+                        "Short %": st.column_config.TextColumn("Short %", width="small"),
                     },
                 )
 
