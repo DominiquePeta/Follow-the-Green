@@ -27,6 +27,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 import datetime
 import io
+from developments import render_developments_tab
 import requests
 import xml.etree.ElementTree as ET
 
@@ -1753,8 +1754,8 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     # TABS
     # ══════════════════════════════════════════════════════════════════════════
-    tab_scanner, tab_sector, tab_cross, tab_brief = st.tabs(
-        ["📡 Scanner", "🌡️ Sector Rotation", "🌍 Cross-Market", "📰 Daily Brief"]
+    tab_scanner, tab_sector, tab_cross, tab_brief, tab_dev = st.tabs(
+        ["📡 Scanner", "🌡️ Sector Rotation", "🌍 Cross-Market", "📰 Daily Brief", "🔬 Developments"]
     )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -2303,6 +2304,15 @@ def main():
             is_investor=is_investor,
             active_ma_period=active_ma_period,
             scan_tickers_fn=scan_tickers,
+        )
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 5 — DEVELOPMENTS TO WATCH
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_dev:
+        render_developments_tab(
+            ftse_tickers=FTSE_100,
+            sp500_tickers=SP500_TOP50,
         )
 
 
