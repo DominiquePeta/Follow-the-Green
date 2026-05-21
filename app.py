@@ -1753,8 +1753,8 @@ def main():
     # ══════════════════════════════════════════════════════════════════════════
     # TABS
     # ══════════════════════════════════════════════════════════════════════════
-    tab_scanner, tab_sector, tab_cross = st.tabs(
-        ["📡 Scanner", "🌡️ Sector Rotation", "🌍 Cross-Market"]
+    tab_scanner, tab_sector, tab_cross, tab_brief = st.tabs(
+        ["📡 Scanner", "🌡️ Sector Rotation", "🌍 Cross-Market", "📰 Daily Brief"]
     )
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -2289,6 +2289,429 @@ def main():
             """)
         else:
             st.info("👆 Click **Run Cross-Market Analysis** to fetch live comparison data.")
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # TAB 4 — DAILY BRIEF
+    # ──────────────────────────────────────────────────────────────────────────
+    with tab_brief:
+        render_daily_brief(
+            ftse_tickers=FTSE_100,
+            sp500_tickers=SP500_TOP50,
+            ftse_sectors=FTSE_SECTORS,
+            sp500_sectors=SP500_SECTORS,
+            backlog_notes=BACKLOG_NOTES,
+            is_investor=is_investor,
+            active_ma_period=active_ma_period,
+            scan_tickers_fn=scan_tickers,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DAILY BRIEF — helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Standard SPDR sector ETFs — used for the S&P sector pulse.
+# All are free to fetch from Yahoo Finance, no API key required.
+_SP_SECTOR_ETF_MAP: dict[str, str] = {
+    "XLF":  "Financials",
+    "XLI":  "Industrials",
+    "XLE":  "Energy",
+    "XLK":  "Technology",
+    "XLV":  "Healthcare",
+    "XLB":  "Materials",
+    "XLP":  "Con. Staples",
+    "XLY":  "Con. Discr.",
+    "XLU":  "Utilities",
+    "XLRE": "Real Estate",
+    "XLC":  "Comm. Svcs",
+}
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _fetch_sector_1d_returns(
+    ticker_sector_pairs: tuple,  # tuple of (ticker, sector_name) — must be hashable for cache
+) -> dict[str, float]:
+    """
+    Batch-download the last 5 trading days for every ticker in
+    *ticker_sector_pairs*, compute each ticker's 1-day return
+    (most-recent close vs previous close), and return the mean
+    return per sector.
+
+    Uses a single yf.download call for the entire batch — fast even
+    for 60+ tickers. Cached for 1 hour alongside all other price data.
+
+    Returns {sector_name: avg_1d_pct_return}, or empty dict on failure.
+    """
+    if not ticker_sector_pairs:
+        return {}
+    try:
+        tickers = [t for t, _ in ticker_sector_pairs]
+        raw = yf.download(
+            " ".join(tickers), period="5d",
+            progress=False, auto_adjust=True, multi_level_index=True,
+        )
+        if raw is None or raw.empty or len(raw) < 2:
+            return {}
+
+        # Extract Close prices, handling both MultiIndex and flat column frames
+        if isinstance(raw.columns, pd.MultiIndex):
+            close = raw["Close"]
+        else:
+            close = raw[["Close"]].rename(columns={"Close": tickers[0]})
+
+        # Per-ticker 1-day return: today vs yesterday
+        ticker_1d: dict[str, float] = {}
+        for t in tickers:
+            if t in close.columns:
+                series = close[t].dropna()
+                if len(series) >= 2:
+                    ticker_1d[t] = (
+                        (float(series.iloc[-1]) - float(series.iloc[-2]))
+                        / float(series.iloc[-2])
+                    ) * 100
+
+        # Average by sector
+        sector_map = {t: s for t, s in ticker_sector_pairs}
+        grouped: dict[str, list[float]] = {}
+        for t, ret in ticker_1d.items():
+            sector = sector_map.get(t, "Other")
+            grouped.setdefault(sector, []).append(ret)
+
+        return {s: round(float(np.mean(rets)), 2) for s, rets in grouped.items()}
+
+    except Exception:
+        return {}
+
+
+def _render_sector_pulse_column(returns: dict[str, float]) -> None:
+    """
+    Render a compact sector-performance list.
+    Top 3 sectors (by 1-day return) are shown in green, bottom 3 in red,
+    the rest in neutral grey.
+    """
+    sorted_sectors = sorted(returns.items(), key=lambda x: x[1], reverse=True)
+    n = len(sorted_sectors)
+
+    for i, (sector, ret) in enumerate(sorted_sectors):
+        if i < 3:
+            colour, bg = "#68d391", "rgba(72,187,120,0.12)"
+        elif i >= n - 3:
+            colour, bg = "#fc8181", "rgba(252,129,129,0.12)"
+        else:
+            colour, bg = "#a0aec0", "transparent"
+
+        arrow = "▲" if ret >= 0 else "▼"
+        st.markdown(
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'padding:5px 10px;border-radius:6px;margin-bottom:3px;background:{bg};">'
+            f'<span style="color:#e2e8f0;font-size:0.83rem;">{sector}</span>'
+            f'<span style="color:{colour};font-weight:700;font-size:0.83rem;">'
+            f'{arrow} {abs(ret):.2f}%</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_watchlist_cards(
+    df: pd.DataFrame,
+    backlog_notes: dict,
+    ma_label: str,
+) -> None:
+    """
+    Render each watchlist ticker as a compact signal card showing:
+    signal badge, MFS bar, Vol Ratio, Buy Eligible flag, and backlog note.
+    """
+    for _, row in df.iterrows():
+        ticker  = str(row.get("Ticker", ""))
+        company = str(row.get("Company", ticker))
+        signal  = str(row.get("Signal", "Neutral"))
+        mfs     = int(row.get("Money Flow Score") or 0)
+        vr      = float(row.get("Vol Ratio") or 0.0)
+        buy_ok  = str(row.get("Buy Eligible", "🚫"))
+        warns   = str(row.get("Warnings", ""))
+        note    = backlog_notes.get(ticker, "")
+
+        if "Heavy" in signal and "Accumulation" in signal:
+            sig_colour, sig_bg = "#00ff00", "rgba(0,255,0,0.10)"
+        elif "Heavy" in signal:
+            sig_colour, sig_bg = "#ff4444", "rgba(255,68,68,0.10)"
+        elif "Bullish" in signal:
+            sig_colour, sig_bg = "#68d391", "rgba(72,187,120,0.10)"
+        elif "Bearish" in signal:
+            sig_colour, sig_bg = "#fc8181", "rgba(252,129,129,0.10)"
+        else:
+            sig_colour, sig_bg = "#718096", "rgba(113,128,150,0.10)"
+
+        mfs_bar = (
+            f'<div style="background:#2d3748;border-radius:4px;height:5px;'
+            f'width:100%;margin-top:4px;">'
+            f'<div style="background:#2196f3;border-radius:4px;height:5px;'
+            f'width:{mfs}%;"></div></div>'
+        )
+        warn_html = (
+            f'<div style="color:#fbbf24;font-size:0.74rem;margin-top:3px;">⚠️ {warns}</div>'
+            if warns else ""
+        )
+        note_html = (
+            f'<div style="color:#4a5568;font-size:0.74rem;font-style:italic;'
+            f'margin-top:4px;">📋 {note}</div>'
+            if note else ""
+        )
+
+        st.markdown(
+            f'<div style="background:#161b27;border:1px solid #2d3748;border-radius:8px;'
+            f'padding:10px 14px;margin-bottom:8px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div>'
+            f'<span style="color:#e2e8f0;font-weight:700;font-size:0.9rem;">{company}</span>'
+            f'<span style="color:#4a5568;font-size:0.78rem;margin-left:6px;">{ticker}</span>'
+            f'</div>'
+            f'<span style="background:{sig_bg};color:{sig_colour};font-size:0.74rem;'
+            f'font-weight:700;padding:2px 9px;border-radius:12px;'
+            f'border:1px solid {sig_colour}40;">{signal}</span>'
+            f'</div>'
+            f'<div style="margin-top:5px;display:flex;gap:14px;">'
+            f'<span style="color:#718096;font-size:0.78rem;">'
+            f'MFS <b style="color:#90cdf4;">{mfs}/100</b></span>'
+            f'<span style="color:#718096;font-size:0.78rem;">'
+            f'Vol <b style="color:#e2e8f0;">{vr:.2f}×</b></span>'
+            f'<span style="font-size:0.78rem;">{buy_ok}</span>'
+            f'</div>'
+            f'{mfs_bar}'
+            f'{warn_html}'
+            f'{note_html}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _render_top5_signals(df: pd.DataFrame, ma_label: str) -> None:
+    """
+    Render the top 5 Bullish / Heavy Accumulation signals from a full scan,
+    ranked by Money Flow Score descending. Each signal is shown as a
+    left-bordered card with key metrics.
+    """
+    bullish_signals = ["Bullish Accumulation", "🟢🟢 Heavy Accumulation"]
+    top = (
+        df[df["Signal"].isin(bullish_signals)]
+        .sort_values("Money Flow Score", ascending=False, na_position="last")
+        .head(5)
+    )
+
+    if top.empty:
+        st.info("No bullish signals in the latest scan. Try again later or switch modes.")
+        return
+
+    st.markdown(f"**Top {len(top)} Bullish Signals** from "
+                f"{len(df[~df['Signal'].isin(['No Data','Error'])])} tickers scanned:")
+
+    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+    ma_pct_col = f"% from {ma_label}"
+
+    for rank, (_, row) in enumerate(top.iterrows(), start=1):
+        ticker  = str(row.get("Ticker", ""))
+        company = str(row.get("Company", ticker))
+        signal  = str(row.get("Signal", ""))
+        mfs     = int(row.get("Money Flow Score") or 0)
+        vr      = float(row.get("Vol Ratio") or 0.0)
+        buy_ok  = str(row.get("Buy Eligible", "🚫"))
+        warns   = str(row.get("Warnings", ""))
+        vf      = str(row.get("💎 Value+Flow", ""))
+        dist    = row.get(ma_pct_col, row.get("% from MA"))
+
+        is_heavy   = "Heavy" in signal
+        sig_colour = "#00ff00" if is_heavy else "#68d391"
+        sig_bg     = "rgba(0,255,0,0.08)" if is_heavy else "rgba(72,187,120,0.08)"
+        dist_str   = (f"{dist:+.1f}%" if isinstance(dist, (int, float))
+                      and not pd.isna(dist) else "—")
+
+        warn_html = (
+            f'<div style="color:#fbbf24;font-size:0.75rem;margin-top:5px;">⚠️ {warns}</div>'
+            if warns else ""
+        )
+        vf_html = (
+            f'<span style="color:#f6e05e;font-size:0.78rem;margin-left:8px;">{vf}</span>'
+            if vf else ""
+        )
+
+        st.markdown(
+            f'<div style="background:linear-gradient(90deg,{sig_bg} 0%,#161b27 60%);'
+            f'border:1px solid {sig_colour}30;border-left:3px solid {sig_colour};'
+            f'border-radius:8px;padding:12px 16px;margin-bottom:10px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div>'
+            f'<span style="font-size:1rem;">{medals[rank-1]}</span>'
+            f'<span style="color:#e2e8f0;font-weight:800;font-size:0.95rem;'
+            f'margin-left:7px;">{company}</span>'
+            f'<span style="color:#4a5568;font-size:0.78rem;margin-left:6px;">{ticker}</span>'
+            f'</div>'
+            f'<span style="background:{sig_bg};color:{sig_colour};font-size:0.74rem;'
+            f'font-weight:700;padding:2px 9px;border-radius:12px;'
+            f'border:1px solid {sig_colour}40;">{signal}</span>'
+            f'</div>'
+            f'<div style="margin-top:8px;display:flex;gap:20px;flex-wrap:wrap;">'
+            f'<span style="color:#718096;font-size:0.82rem;">'
+            f'MFS <b style="color:#90cdf4;font-size:0.97rem;">{mfs}</b>/100</span>'
+            f'<span style="color:#718096;font-size:0.82rem;">'
+            f'Vol <b style="color:#e2e8f0;">{vr:.2f}×</b></span>'
+            f'<span style="color:#718096;font-size:0.82rem;">'
+            f'vs {ma_label} <b style="color:#e2e8f0;">{dist_str}</b></span>'
+            f'<span style="font-size:0.82rem;">Buy {buy_ok}</span>'
+            f'{vf_html}'
+            f'</div>'
+            f'{warn_html}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DAILY BRIEF — main render function
+# ─────────────────────────────────────────────────────────────────────────────
+
+def render_daily_brief(
+    ftse_tickers: dict,
+    sp500_tickers: dict,
+    ftse_sectors: dict,
+    sp500_sectors: dict,
+    backlog_notes: dict,
+    is_investor: bool,
+    active_ma_period: int,
+    scan_tickers_fn,
+) -> None:
+    """
+    Render the Daily Brief tab — a pre-digested morning read designed to be
+    skimmed in under 30 seconds.
+
+    Sections:
+      1. Header — today's date, active profile badge
+      2. Sector Pulse — 1-day leaders / laggards for FTSE and S&P sectors
+      3. Watchlist Spotlight — auto-scan of all BACKLOG_NOTES tickers
+      4. Top Signals — button-triggered full scan; surfaces the top 5
+         Bullish / Heavy Accumulation signals ranked by Money Flow Score
+    """
+    today      = datetime.date.today()
+    mode_label = "📊 Investor (SMA150)" if is_investor else "⚡ Trader (SMA50)"
+    ma_label   = "SMA150" if is_investor else "SMA50"
+
+    # ── 1. Header ─────────────────────────────────────────────────────────────
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#1a2744 0%,#121827 100%);'
+        f'padding:16px 22px;border-radius:10px;margin-bottom:16px;'
+        f'border:1px solid #2d3748;">'
+        f'<h2 style="margin:0 0 3px 0;color:#90cdf4;font-size:1.35rem;font-weight:800;">'
+        f'📰 Daily Brief</h2>'
+        f'<p style="margin:0;color:#718096;font-size:0.86rem;">'
+        f'{today.strftime("%A, %d %B %Y")}'
+        f'&nbsp;·&nbsp;<span style="color:#63b3ed;">{mode_label}</span></p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── 2. Sector Pulse ───────────────────────────────────────────────────────
+    st.markdown(
+        '<div class="section-header">🌡️ Sector Pulse — Today\'s Leaders &amp; Laggards</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "1-day % change (today vs yesterday). "
+        "FTSE sectors: average of constituent tickers. "
+        "S&P sectors: SPDR sector ETFs (XLF, XLK, …)."
+    )
+
+    col_ftse, col_sp = st.columns(2)
+
+    with col_ftse:
+        st.markdown("**🇬🇧 FTSE Sectors**")
+        ftse_pairs = tuple(ftse_sectors.items())   # (ticker, sector)
+        with st.spinner("Loading FTSE sector data…"):
+            ftse_rets = _fetch_sector_1d_returns(ftse_pairs)
+        if ftse_rets:
+            _render_sector_pulse_column(ftse_rets)
+        else:
+            st.caption("⚠️ Unable to load FTSE sector data.")
+
+    with col_sp:
+        st.markdown("**🇺🇸 S&P Sectors**")
+        sp_pairs = tuple(_SP_SECTOR_ETF_MAP.items())   # (etf_ticker, sector)
+        with st.spinner("Loading S&P sector data…"):
+            sp_rets = _fetch_sector_1d_returns(sp_pairs)
+        if sp_rets:
+            _render_sector_pulse_column(sp_rets)
+        else:
+            st.caption("⚠️ Unable to load S&P sector data.")
+
+    # ── 3. Watchlist Spotlight ────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div class="section-header">📋 Watchlist Spotlight</div>',
+        unsafe_allow_html=True,
+    )
+
+    if not backlog_notes:
+        st.info("No tickers in BACKLOG_NOTES. Add entries to see your watchlist here.")
+    else:
+        # Build {company_name: ticker} — look up names from the master ticker dicts
+        all_ticker_to_name = {v: k for k, v in {**ftse_tickers, **sp500_tickers}.items()}
+        watchlist_dict = {
+            all_ticker_to_name.get(t, t): t
+            for t in backlog_notes.keys()
+        }
+        with st.spinner(f"Scanning {len(watchlist_dict)} watchlist tickers…"):
+            wl_df = scan_tickers_fn(watchlist_dict, is_investor=is_investor)
+            if "% from MA" in wl_df.columns:
+                wl_df = wl_df.rename(columns={"% from MA": f"% from {ma_label}"})
+
+        if wl_df.empty:
+            st.warning("No data returned for watchlist tickers.")
+        else:
+            _render_watchlist_cards(wl_df, backlog_notes, ma_label)
+
+    # ── 4. Top Signals (button-triggered full scan) ───────────────────────────
+    st.markdown("---")
+    st.markdown(
+        '<div class="section-header">🔍 Today\'s Top Signals</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Session-state keys include the MA period so cached results are discarded
+    # automatically when the user switches between Investor and Trader mode.
+    _cache_key = f"brief_scan_{active_ma_period}"
+    _ts_key    = f"brief_scan_ts_{active_ma_period}"
+
+    scan_result: pd.DataFrame | None = st.session_state.get(_cache_key)
+    scan_ts: datetime.datetime | None = st.session_state.get(_ts_key)
+
+    if scan_ts is not None:
+        age_min = int((datetime.datetime.now() - scan_ts).total_seconds() / 60)
+        st.caption(
+            f"Last full scan: {scan_ts.strftime('%H:%M')} — {age_min} min ago"
+            f" · {mode_label}"
+        )
+
+    combined = {**ftse_tickers, **sp500_tickers}
+    if st.button(
+        f"🔄 Scan FTSE 100 + S&P 500 ({len(combined)} tickers)",
+        help="Scans every ticker and surfaces the top Bullish / Heavy Accumulation "
+             "signals ranked by Money Flow Score. First run takes ~60–90 s; "
+             "price data is then cached for 1 hour.",
+    ):
+        with st.spinner(f"Scanning {len(combined)} tickers — please wait…"):
+            full_df = scan_tickers_fn(combined, is_investor=is_investor)
+            if "% from MA" in full_df.columns:
+                full_df = full_df.rename(
+                    columns={"% from MA": f"% from {ma_label}"}
+                )
+        st.session_state[_cache_key] = full_df
+        st.session_state[_ts_key]    = datetime.datetime.now()
+        scan_result = full_df
+
+    if scan_result is not None and not scan_result.empty:
+        _render_top5_signals(scan_result, ma_label)
+    elif scan_result is None:
+        st.info(
+            "👆 Click the button above to run today's full scan. "
+            "Results are cached for the session — switching tabs will not lose them."
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
